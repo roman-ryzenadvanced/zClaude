@@ -1,0 +1,38 @@
+#!/bin/bash
+# zClaude Universal Launcher — entry point
+# Launches the new TUI control center (zclaude_launcher.py)
+set -e
+
+# Resolve the directory where this script lives (follows symlinks)
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+
+# Find zclaude installation: check common locations in order of priority
+SEARCH_PATHS=(
+    "$SCRIPT_DIR/../share/zclaude"           # installed alongside bin/
+    "$HOME/.local/share/zclaude"             # standard XDG data
+    "$HOME/zclaude-push"                     # dev/source dir
+    "/tmp/zclaude-push"                      # temp/dev dir
+    "$HOME/zclaude"                          # alternate dev dir
+    "$SCRIPT_DIR"                            # same dir as script
+    "/opt/zclaude"                           # system-wide install
+)
+
+ZCLAUDE_DIR=""
+for p in "${SEARCH_PATHS[@]}"; do
+    if [ -f "$p/zclaude_launcher.py" ]; then
+        ZCLAUDE_DIR="$p"
+        break
+    fi
+done
+
+if [ -z "$ZCLAUDE_DIR" ]; then
+    echo "Error: zclaude_launcher.py not found." >&2
+    echo "Searched:" >&2
+    for p in "${SEARCH_PATHS[@]}"; do echo "  $p" >&2; done
+    echo "" >&2
+    echo "Install zClaude or set ZCLAUDE_HOME to the source directory." >&2
+    exit 1
+fi
+
+# Pass all arguments through to the launcher
+exec python3 "$ZCLAUDE_DIR/zclaude_launcher.py" "$@"

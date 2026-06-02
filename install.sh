@@ -58,6 +58,7 @@ install_files() {
 
     # Create launcher symlinks/scripts
     local SCRIPTS=(
+        "zclaude_launcher.py:zclaude"
         "translate-proxy.py:zclaude-proxy"
         "provider_manager.py:zclaude-providers"
         "session_manager.py:zclaude-sessions"
@@ -143,6 +144,7 @@ main() {
     echo "  ╠══════════════════════════════════════════════╣"
     echo "  ║                                          ║"
     echo "  ║  Quick Start:                             ║"
+    echo "  ║    zclaude          ← Universal Launcher  ║"
     echo "  ║    zclaude-providers wizard               ║"
     echo "  ║    zclaude-proxy                          ║"
     echo "  ║    zclaude-gui                             ║"
