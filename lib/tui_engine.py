@@ -810,12 +810,10 @@ class Screen:
         if sidebar and main:
             # Calculate heights
             total_h = self.h - 3  # -3 for status bar
-            side_lines = sidebar.count("\n") + 1
-            main_h = total_h - side_lines
 
             # Render sidebar (truncated to fit)
             side_parts = sidebar.split("\n")
-            for line in side_lines[:main_h]:
+            for line in side_parts:
                 self.writeln(line)
 
             # Main content fills remaining space
