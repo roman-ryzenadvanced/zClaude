@@ -590,13 +590,15 @@ class Keyboard:
 class Screen:
     """Full-screen frame renderer.
 
-    Layout (matches OpenCode root view):
-    ┌──────────────────────────────────────────────┐
-    │                  (content area)                │
-    │   SplitPane:  sidebar(30%) │ main(70%)        │
-    ├──────────────────────────────────────────────┤
-    │ StatusBar: [hints...msg.............model]    │
-    └──────────────────────────────────────────────┘
+    Two layout modes:
+      1. Wizard mode (sidebar + main): Compact left panel (steps) | right (dialog)
+      2. Full-width (main only): Dialog takes entire width
+
+    ┌──────────────────────────────────────────────────┐
+    │ [Steps] │         (dialog / main content)          │
+    ├──────────┤──────────────────────────────────────┤
+    │ StatusBar: [hints..................model]       │
+    └──────────────────────────────────────────────────┘
     """
 
     def __init__(self):
@@ -605,24 +607,40 @@ class Screen:
 
     def render(self, sidebar: str = "", main: str = "",
               hints: str = "", message: str = "",
-              model: str = "") -> None:
-        """Render complete frame: split pane + status bar."""
+              model: str = "", wizard: bool = True) -> None:
+        """Render complete frame."""
         Term.clear()
 
         w = self.w
         h = self.h
+        content_h = h - 1  # 1 row for status bar
 
-        # Content area (leave 1 row for status bar)
-        content_h = h - 1
+        if sidebar and main and wizard:
+            # Wizard mode: narrow step indicator | wide dialog
+            side_w = min(26, w // 4)  # ~25% for steps
+            main_w = w - side_w - 2     # -2 for divider
 
-        if sidebar and main:
-            # Render split pane, clipped to content height
-            pane = SplitPane(ratio=0.70)
-            full = pane.render(sidebar, main, w=w, h=content_h)
-            lines = full.split("\n")
-            for line in lines[:content_h]:
-                print(line)
+            side_lines = sidebar.split("\n")
+            main_lines = main.split("\n")
+
+            for i in range(content_h):
+                if i < len(side_lines) and i < len(main_lines):
+                    sl = _pad(side_lines[i], side_w) if i < len(side_lines) else "|" * side_w
+                    ml = _pad(main_lines[i], main_w) if i < len(main_lines) else ""
+                    print(f"{sl} | {ml}")
+                elif i < len(side_lines):
+                    sl = _pad(side_lines[i], side_w) if i < len(side_lines) else "|" * side_w
+                    ml = " " * main_w
+                    print(f"{sl} | {ml}")
+                else:
+                    # Sidebar done, show main or fill
+                    if i < len(main_lines):
+                        print(f"{'│' * side_w} {_pad(main_lines[i], main_w)}")
+                    else:
+                        print(f"{'│' * side_w}{' ' * main_w}")
+
         elif main:
+            # Full-width mode (no sidebar)
             for line in main.split("\n")[:content_h]:
                 print(line)
         elif sidebar:
@@ -689,18 +707,34 @@ class Sidebar:
             line = f"{bg}{marker} {lbl}{key_str}{badge_str}{T.RESET}"
             lines.append(f"{ch['l']}{_pad(line, inner)}{ch['r']}")
 
-        # Fill remaining space
-        total_items = len(lines) - 3  # minus top border, header, separator
-        fill = max(0, Term.h() - total_items - 4)  # -4 for bottom elements
-        for _ in range(fill):
-            lines.append(f"{ch['l']}{' ' * inner}{ch['r']}")
+    def render_compact(self) -> str:
+        """Compact sidebar — no fill, no footer. For wizard step indicator."""
+        w = 26
+        inner = w - 2
+        ch = Box.ROUND
+        lines: List[str] = []
 
-        # Separator before footer
+        lines.append(f"{ch['tl']}{'─' * inner}{ch['tr']}")
+        header = f" {T.primary('◆')} {T.bold(self.title)}"
+        lines.append(f"{ch['l']}{_pad(header, inner)}{ch['r']}")
         lines.append(f"{ch['l']}{'─' * inner}{ch['r']}")
 
-        # Footer
-        footer = f" {T.dim('v' + '1.0' if True else '')}"
-        lines.append(f"{ch['l']}{_pad(footer, inner)}{ch['r']}")
+        for idx, item in enumerate(self.items):
+            is_active = (idx == self.active_idx)
+            if is_active:
+                marker = T.primary("▸")
+                lbl = T.bold(item.label)
+            else:
+                marker = item.icon
+                lbl = T.text(item.label)
+
+            key_str = f" {T.dim(item.key)}" if item.key else ""
+            badge_str = f" {T.secondary(item.badge)}" if item.badge else ""
+            line = f"{marker} {lbl}{key_str}{badge_str}"
+            lines.append(f"{ch['l']}{_pad(line, inner)}{ch['r']}")
+
+        lines.append(f"{ch['vl']}{'─' * inner}{ch['br']}")
+        return "\n".join(lines)
         lines.append(f"{ch['vl']}{'─' * inner}{ch['br']}")
 
         return "\n".join(lines)

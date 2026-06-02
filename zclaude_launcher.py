@@ -187,7 +187,7 @@ def build_sidebar(current_screen: str, state: Dict) -> str:
         SCREEN_PROVIDER: 0, SCREEN_MODEL: 1,
         SCREEN_TOOL: 2, SCREEN_LAUNCH: 3,
     }.get(current_screen, 0))
-    return sb.render()
+    return sb.render_compact()
 
 
 # ═══════════════════════════════════════════════════════════════
