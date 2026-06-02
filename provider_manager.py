@@ -66,21 +66,21 @@ class _C:
         return f"{code}{text}{cls.RESET}"
 
     @classmethod
-    def red(cls, t: str)   -> return cls._c(cls.RED, t)
+    def red(cls, t: str) -> str: return cls._c(cls.RED, t)
     @classmethod
-    def green(cls, t: str) -> return cls._c(cls.GREEN, t)
+    def green(cls, t: str) -> str: return cls._c(cls.GREEN, t)
     @classmethod
-    def yellow(cls, t: str) -> return cls._c(cls.YELLOW, t)
+    def yellow(cls, t: str) -> str: return cls._c(cls.YELLOW, t)
     @classmethod
-    def cyan(cls, t: str)   -> return cls._c(cls.CYAN, t)
+    def cyan(cls, t: str) -> str: return cls._c(cls.CYAN, t)
     @classmethod
-    def blue(cls, t: str)   -> return cls._c(cls.BLUE, t)
+    def blue(cls, t: str) -> str: return cls._c(cls.BLUE, t)
     @classmethod
-    def magenta(cls, t: str) -> return cls._c(cls.MAGENTA, t)
+    def magenta(cls, t: str) -> str: return cls._c(cls.MAGENTA, t)
     @classmethod
-    def bold(cls, t: str)   -> return cls._c(cls.BOLD, t)
+    def bold(cls, t: str) -> str: return cls._c(cls.BOLD, t)
     @classmethod
-    def dim(cls, t: str)    -> return cls._c(cls.DIM, t)
+    def dim(cls, t: str) -> str: return cls._c(cls.DIM, t)
 
 
 # ─── Backend type catalog ───────────────────────────────────────
@@ -197,16 +197,55 @@ MODEL_CATALOGS = {
 # ════════════════════════════════════════════════════════════════════
 
 def load_endpoints() -> Dict[str, Any]:
-    """Load endpoints config. Returns empty dict if missing/invalid."""
+    """Load endpoints config. Normalizes both formats into {name: cfg} dict."""
     if not ENDPOINTS_FILE.exists():
         return {}
     try:
-        data = json.loads(ENDPOINTS_FILE.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            return data
+        raw = json.loads(ENDPOINTS_FILE.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return {}
+
+        # Format 1: Flat dict {name: cfg} ← our native format
+        if "endpoints" not in raw and any(
+            isinstance(v, dict) and "backend_type" in v or "base_url" in v
+            for v in raw.values()
+        ):
+            return raw
+
+        # Format 2: List-based {"endpoints": [...], "default": "..."}
+        # Normalize → flat dict keyed by endpoint name
+        if "endpoints" in raw and isinstance(raw["endpoints"], list):
+            normalized: Dict[str, Any] = {}
+            for ep in raw["endpoints"]:
+                if not isinstance(ep, dict) or "name" not in ep:
+                    continue
+                name = ep.pop("name")
+                # Map list-format keys to our standard keys
+                cfg = {
+                    "backend_type": ep.get("backend_type", ""),
+                    "base_url": ep.get("base_url", ""),
+                    "api_key": ep.get("api_key", ""),
+                    "model": ep.get("default_model", ep.get("model", "")),
+                    "is_default": (name == raw.get("default", "")),
+                    "reasoning_effort": ep.get("reasoning_effort", "medium"),
+                    "stream_idle_timeout": ep.get("stream_idle_timeout", 30),
+                    "caveman_mode": ep.get("caveman_mode", False),
+                    "rtk_compression": ep.get("rtk_compression", False),
+                    "reasoning_enabled": ep.get("reasoning_enabled", True),
+                    "prompt_enhancer": ep.get("prompt_enhancer", False),
+                    "_models_list": ep.get("models", []),
+                    "_provider_preset": ep.get("provider_preset", ""),
+                    "cc_version": ep.get("cc_version", ""),
+                }
+                # Only include non-empty api_key from local config
+                if not cfg["api_key"]:
+                    cfg.pop("api_key", None)
+                normalized[name] = cfg
+            return normalized
+
+        return raw
     except (json.JSONDecodeError, OSError):
-        pass
-    return {}
+        return {}
 
 
 def save_endpoints(data: Dict[str, Any]) -> None:
