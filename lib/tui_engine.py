@@ -535,7 +535,7 @@ class Menu:
             marker = "▸ " if idx == self.cursor else "  "
             sel = item if idx == self.cursor else item
             if idx == self.cursor:
-                lines.append(f"{marker}{T.PRIMARY(sel)}")
+                lines.append(f"{marker}{T.primary(sel)}")
             else:
                 lines.append(f"{marker}{T.text(sel)}")
         if self.pages > 1:
@@ -628,7 +628,7 @@ class ProgressBar:
         pct = min(100, current * 100 // max(self.total, 1))
         filled = int(pct * self.width / 100)
         empty = self.width - filled
-        bar = T.PRIMARY("█" * filled) + T.DIM("░" * empty)
+        bar = T.primary("█" * filled) + T.dim("░" * empty)
         lbl = f" {self.label}" if self.label else ""
         elapsed = _time.time() - self.start
         return f"{bar}{lbl}{T.dim(f' ({elapsed:.1f}s)')}\n"
@@ -690,7 +690,7 @@ class Sidebar:
         for idx, item in enumerate(self.items):
             is_active = (idx == active_idx)
             if is_active:
-                prefix = f"{T.BG_HIGHLIGHT}{T.PRIMARY('▸')}"
+                prefix = f"{T.BG_HIGHLIGHT}{T.primary('▸')}"
                 label_text = T.bold(item.label)
                 suffix = T.RESET
             else:
@@ -733,8 +733,8 @@ class StatusBar:
         hints_part = hints or " ↑↓ Navigate · Enter Select · Esc Back · q Quit"
         mid_pad = w - len(_strip_ansi(left_part)) - len(_strip_ansi(right_part)) - len(_strip_ansi(hints_part)) - 4
         mid = " " * max(0, mid_pad)
-        return f"{T.BG_DARK}{T.BORDER}{T.TEXT(left_part)}{mid}" \
-               f"{T.TEXT_DIM(right_part)}{T.TEXT_DIM(hints_part)}" \
+        return f"{T.BG_DARK}{T.BORDER}{T.text(left_part)}{mid}" \
+               f"{T.muted(right_part)}{T.muted(hints_part)}" \
                f"{T.BORDER}{T.RESET}"
 
 

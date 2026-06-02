@@ -188,12 +188,12 @@ def render_header_line(title: str = "", subtitle: str = "") -> str:
     if subtitle:
         text = (
             f"{T.bold(T.mauve(' ◆ '))}{T.title(title)} "
-            f"{T.TEXT_DIM(subtitle)}"
+            f"{T.muted(subtitle)}"
         )
     else:
         text = (
             f"{T.bold(T.mauve(' ◆ '))}{T.title(title)} "
-            f"{T.TEXT_DIM(f'v{VERSION}')}"
+            f"{T.muted(f'v{VERSION}')}"
         )
     pad = w - _strip_ansi(text)
     return (
@@ -206,10 +206,10 @@ def tool_status_icon(tool: ToolInfo) -> str:
     """Return a single-char status indicator for a tool."""
     if tool.installed:
         if tool.supports_native:
-            return f"{T.SUCCESS('●')}"
+            return f"{T.success('●')}"
         else:
-            return f"{T.PRIMARY('●')}"
-    return f"{T.DIM('○')}"
+            return f"{T.primary('●')}"
+    return f"{T.dim('○')}"
 
 
 def format_tool_list_item(tool: ToolInfo, idx: int, cursor: int) -> str:
@@ -225,10 +225,10 @@ def format_tool_list_item(tool: ToolInfo, idx: int, cursor: int) -> str:
     if is_cursor:
         return (
             f"{marker}{T.BG_HIGHLIGHT}{icon} {name}"
-            f" {T.DIM(ver)} {T.DIM(backend + native)}{T.RESET}"
+            f" {T.dim(ver)} {T.dim(backend + native)}{T.RESET}"
         )
     else:
-        return f"{marker}{icon} {T.text(name)} {T.DIM(ver)}"
+        return f"{marker}{icon} {T.text(name)} {T.dim(ver)}"
 
 
 def format_provider_item(name: str, cfg: Dict, idx: int,
@@ -243,7 +243,7 @@ def format_provider_item(name: str, cfg: Dict, idx: int,
 
     marker = "▸ " if is_cursor else "  "
     name_fmt = T.bold(name) if is_cursor else T.text(name)
-    details = f"{T.DIM(backend)} · {T.DIM(model)}"
+    details = f"{T.dim(backend)} · {T.dim(model)}"
 
     if is_cursor:
         return (
@@ -271,7 +271,7 @@ def screen_dashboard(state: Dict) -> Optional[str]:
         # ── Title section ──
         lines.append("")
         lines.append(f"  {T.bold(T.sky('⚡ Launch Pad'))}")
-        lines.append(f"  {T.DIM('Select a tool and provider, then launch')}")
+        lines.append(f"  {T.dim('Select a tool and provider, then launch')}")
         lines.append("")
 
         # ── Quick Stats ──
@@ -279,7 +279,7 @@ def screen_dashboard(state: Dict) -> Optional[str]:
         stats_left = f"{T.text('Tools')}: {T.bold(str(len(installed)) + '/' + str(len(tools)))}"
         stats_right = f"{T.text('Providers')}: {T.bold(str(len(state['endpoints'])))}"
         pid_info = f"T.PID={state['last_pid']}" if state['last_pid'] else ""
-        proxy_info = f"Proxy:{T.BOLD(':')} {state['proxy_port']}" if state.get('proxy_running') else ""
+        proxy_info = f"Proxy:{T.bold(':')} {state['proxy_port']}" if state.get('proxy_running') else ""
         lines.append(f"  {stats_left}    {stats_right}  {pid_info}{proxy_info}")
         lines.append("")
 
@@ -310,7 +310,7 @@ def screen_dashboard(state: Dict) -> Optional[str]:
         lines.append(f"  {Box.horizontal_rule(char='─', double=True)}")
 
         # ── Quick Actions ──
-        lines.append(f"  {T.DIM('Shortcuts:')}")
+        lines.append(f"  {T.dim('Shortcuts:')}")
         lines.append(f"    {T.bold('[1]')} Launch    {T.bold('[3]')} Providers "
                      f"{T.bold('[4]')} Sessions  {T.bold('[5]')} Settings")
 
@@ -383,7 +383,7 @@ def screen_provider_browse(state: Dict) -> Optional[str]:
 
         lines.append("")
         lines.append(f"  {T.bold(T.primary('📡 Providers'))}")
-        lines.append(f"  {T.DIM('Browse, add, edit, or activate AI providers')}")
+        lines.append(f"  {T.dim('Browse, add, edit, or activate AI providers')}")
         lines.append("")
 
         # ── Configured Providers ──
@@ -410,13 +410,13 @@ def screen_provider_browse(state: Dict) -> Optional[str]:
                 mcount = len(pcfg.get("models", []))
                 lines.append(f"    {T.dim(str(idx+1))}. "
                            f"{T.c('secondary', pname)} "
-                           f"{T.DIM(f'[{backend}, {mcount} models]')}")
+                           f"{T.dim(f'[{backend}, {mcount} models]')}")
             if len(presets) > 8:
                 lines.append(f"    {T.dim(f'... and {len(presets)-8} more')}")
 
         lines.append("")
         lines.append(f"  {Box.horizontal_rule(char='─', double=True)}")
-        lines.append(f"  {T.DIM('[a] Add  [e] Edit  [d] Delete  '
+        lines.append(f"  {T.dim('[a] Add  [e] Edit  [d] Delete  '
                      f'[1-8] Quick-add  [Esc] Back')}")
 
         return "\n".join(lines)
@@ -601,9 +601,9 @@ def screen_tool_select(state: Dict) -> Optional[str]:
             marker = "▸ " if idx == cursor else "  "
             sel = T.BG_HIGHLIGHT if idx == cursor else ""
             native = "/native" if tool.supports_native else ""
-            body.append(f"{marker}{sel}{T.SUCCESS('●')} "
+            body.append(f"{marker}{sel}{T.success('●')} "
                        f"{T.bold(tool.display_name)}"
-                       f"{T.DIM(f'v{tool.version}{native}')}{T.RESET}")
+                       f"{T.dim(f'v{tool.version}{native}')}{T.RESET}")
 
         unavailable = [t for t in all_tools if not t.installed]
         if unavailable:
@@ -611,7 +611,7 @@ def screen_tool_select(state: Dict) -> Optional[str]:
             for idx, tool in enumerate(unavailable):
                 offset = len(installed) + idx
                 marker = "▸ " if offset == cursor else "  "
-                body.append(f"{marker}{T.DIM('○')} {T.text(tool.display_name)}"
+                body.append(f"{marker}{T.dim('○')} {T.text(tool.display_name)}"
                        f"{T.dim('  (not found)')}")
 
         return Box.dialog("Select Tool", body, width=56, height=min(16, len(body)+4))
@@ -701,15 +701,15 @@ def screen_launch_confirm(state: Dict) -> Optional[str]:
 
         body.append(f"  {T.text('Tool:')}      "
                    f"{T.highlight(tool.icon + ' ' + tool.display_name)}"
-                   f"{T.DIM(' v' + tool.version)}")
+                   f"{T.dim(' v' + tool.version)}")
         bt = prov_cfg.get("backend_type", "?")
-        provider_detail = T.DIM(" [" + bt + "]")
+        provider_detail = T.dim(" [" + bt + "]")
         body.append(f"  {T.text('Provider:')}  "
                    f"{T.secondary(prov_name)}{provider_detail}")
         body.append(f"  {T.text('Model:')}     "
                    f"{T.bold(prov_cfg.get('default_model', 'default'))}")
         reason = compat.get("reason", "")
-        mode_detail = T.DIM(" — " + reason)
+        mode_detail = T.dim(" — " + reason)
         body.append(f"  {T.text('Mode:')}      "
                    f"{T.c(mode_color, mode.upper())}{mode_detail}")
         for w in compat.get("warnings", []):
@@ -734,7 +734,7 @@ def screen_launch_confirm(state: Dict) -> Optional[str]:
         body.append("")
         body.append(f"  {Box.horizontal_rule(double=True)}")
         hint_text = "[Enter] Launch  [p] Change Provider  [Esc] Back  [e] Toggle Options"
-        body.append(f"  {T.DIM(hint_text)}")
+        body.append(f"  {T.dim(hint_text)}")
 
         return Box.dialog("Confirm Launch", body, width=58,
                           height=len(body)+4)
@@ -836,17 +836,17 @@ def screen_sessions(state: Dict) -> Optional[str]:
                 sel = T.BG_HIGHLIGHT if idx == cursor else ""
                 lines.append(f"{marker}{sel}{T.c('secondary', provider_icon)}"
                              f" {T.text(s.title[:45])}"
-                             f"{T.DIM(f' · {s.model}')}"
-                             f"{T.DIM(time_str)}")
+                             f"{T.dim(f' · {s.model}')}"
+                             f"{T.dim(time_str)}")
         else:
             lines.append(f"  {T.dim('No sessions found.')}")
             lines.append("")
-            lines.append(f"  {T.DIM('Sessions appear after using coding tools.')}")
+            lines.append(f"  {T.dim('Sessions appear after using coding tools.')}")
 
         lines.append("")
         lines.append(f"  {Box.horizontal_rule(double=True)}")
         hint_text = "[r] Refresh  [↑↓] Navigate  [Enter] Resume  [Esc] Back"
-        lines.append(f"  {T.DIM(hint_text)}")
+        lines.append(f"  {T.dim(hint_text)}")
 
         return "\n".join(lines)
 
@@ -925,7 +925,7 @@ def screen_settings(state: Dict) -> Optional[str]:
         lines.append("")
         lines.append(f"  {Box.horizontal_rule(double=True)}")
         hint_text = "[d] Set Default Provider  [o] Toggle Options  [Esc] Dashboard"
-        lines.append(f"  {T.DIM(hint_text)}")
+        lines.append(f"  {T.dim(hint_text)}")
 
         return "\n".join(lines)
 
