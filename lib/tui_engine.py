@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""zClaude TUI Engine — Modern terminal UI framework.
+"""zClaude TUI Engine — OpenCode/Crush-inspired terminal UI framework.
 
-Design language: dark theme, rounded borders, sidebar layout.
-  - Dark theme: #1e2327 background, #89b4fa accent, #cdd6f4 text
-  - Sidebar + Main content split layout
-  - Rounded border panels (╭╮╰╯) with double-line headers
-  - Dialog overlays for selections
-  - Status bar at bottom
-  - Consistent spacing and typography
+Replicates the visual design language of OpenCode (Charm Bubble Tea):
+  - SplitPane layout: 70% main | 30% sidebar (horizontal)
+  - Container system: per-side borders + padding
+  - Dark theme: #212121 bg, #fab283 primary (orange), #e0e0e0 text
+  - RoundedBorder dialogs for overlays
+  - Status bar (1 row) with segmented layout
+  - Viewport-based list scrolling
 
 Zero external dependencies. Pure Python stdlib.
 Works on Linux, macOS, Windows, Termux, SSH.
@@ -16,7 +16,7 @@ Works on Linux, macOS, Windows, Termux, SSH.
 from __future__ import annotations
 
 import os
-import shutil
+import re
 import sys
 import time as _time
 import threading
@@ -24,25 +24,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 # ═══════════════════════════════════════════════════════════════
-# Theme — Dark color palette
+# Theme — OpenCode default dark palette
 # ═══════════════════════════════════════════════════════════════
+# Source: internal/tui/theme/opencode.go from opencode-ai/opencode
 
 class Theme:
-    """Dark theme. All colors as ANSI escape strings.
+    """OpenCode dark theme — exact hex values from source.
 
-    Palette reference:
-      Background:    #1e2327  (surface)
-      Surface:       #282d35  (elevated surface)
-      SurfaceDarker: #181825  (darker surface)
-      Text:          #cdd6f4  (primary text)
-      TextMuted:     #6c7086  (secondary text)
-      Primary:       #89b4fa  (accent blue)
-      Secondary:     #a6e3a1  (teal/green accent)
-      Success:       #a6e3a1  (green)
-      Warning:       #f9e2af  (yellow/gold)
-      Error:         #f38ba8  (red/pink)
-      Border:        #313244  (subtle border)
-      BorderFocus:   #89b4fa  (accent border)
+    Key difference from typical themes: Primary is ORANGE (#fab283),
+    not blue. Blue is Secondary (#5c9cf5). This matches OpenCode's
+    distinctive warm accent on cool background look.
     """
 
     # ── Raw ANSI codes ──────────────────────────────────────
@@ -54,39 +45,30 @@ class Theme:
     STRIKETHROUGH = "\033[9m"
     REVERSED = "\033[7m"
 
-    # ── Theme colors (256-color approximations of hex values) ───
-    # Background shades
-    BG = "\033[48;5;16;23m"           # #1e2327
-    BG_SURFACE = "\033[48;5;40;45m"     # #282d35
-    BG_DARK = "\033[48;5;24;24m"         # #181825
-    BG_HIGHLIGHT = "\033[48;5;41;49m"   # #313244
+    # ── Background shades ─────────────────────────────────
+    BG = "\033[48;5;0m"               # #212121 → black (closest 256)
+    BG_SECONDARY = "\033[48;5;236m"     # #252525 → dark gray
+    BG_DARKER = "\033[48;5;16m"        # #121212 → near-black
+    BG_HIGHLIGHT = "\033[48;5;238m"    # #303030 → selection bg
 
-    # Text colors
-    TEXT = "\033[38;5;205;212m"        # #cdd6f4
-    TEXT_DIM = "\033[38;5;108;112m"      # #6c7086
-    TEXT_SUBTLE = "\033[38;5;88;91m"     # #515562
+    # ── Text colors ───────────────────────────────────────
+    TEXT = "\033[38;5;252m"            # #e0e0e0 → light gray
+    TEXT_MUTED = "\033[38;5;242m"      # #6a6a6a → dim gray
+    TEXT_EMPHASIZED = "\033[38;5;220m" # #e5c07b → gold/yellow
 
-    # Semantic / accent colors
-    PRIMARY = "\033[38;5;137;180m"      # #89b4fa (sky blue)
-    SECONDARY = "\033[38;5;166;227m"    # #a6e3a1 (green/teal)
-    SUCCESS = "\033[38;5;166;227m"      # #a6e3a1
-    WARNING = "\033[38;5;249;226m"      # #f9e2af
-    ERROR = "\033[38;5;243;138m"        # #f38ba8
-    INFO = "\033[38;5;137;180m"         # #89b4fa
+    # ── Semantic / accent colors ───────────────────────────
+    PRIMARY = "\033[38;5;215m"         # #fab283 → orange/gold (MAIN ACCENT)
+    SECONDARY = "\033[38;5;75m"       # #5c9cf5 → blue
+    ACCENT = "\033[38;5;141m"         # #9d7cd8 → purple
+    SUCCESS = "\033[38;5;77m"         # #7fd88f → green
+    WARNING = "\033[38;5;215m"        # #f5a742 → orange
+    ERROR = "\033[38;5;167m"          # #e06c75 → red
+    INFO = "\033[38;5;74m"            # #56b6c2 → cyan
 
-    # Border colors
-    BORDER = "\033[38;5;49;50m"          # #313244
-    BORDER_FOCUS = "\033[38;5;137;180m"   # #89b4fa
-    BORDER_DIM = "\033[38;5;88;91m"       # #515562
-
-    # Special highlights
-    ROSEWATER = "\033[38;5;243;138m"     # #f38ba8
-    LAVENDER = "\033[38;5;180;190m"     # #b4befe
-    MAUVE = "\033[38;5;203;166m"        # #cba6f7
-    PEACH = "\033[38;5;235;160m"        # #eba0ac
-    SKY = "\033[38;5;137;180m"          # #89b4fa
-    GREEN = "\033[38;5;166;227m"        # #a6e3a1
-    RED = "\033[38;5;243;138m"          # #f38ba8
+    # ── Border colors ─────────────────────────────────────
+    BORDER = "\033[38;5;240m"          # #4b4c5c → subtle border
+    BORDER_FOCUSED = "\033[38;5;215m"  # = PRIMARY (#fab283)
+    BORDER_DIM = "\033[38;5;238m"      # #303030 → selection border
 
     _enabled: bool = True
 
@@ -96,22 +78,21 @@ class Theme:
 
     @classmethod
     def rgb(cls, r: int, g: int, b: int) -> str:
-        """Return 256-color ANSI for given RGB."""
         return f"\033[38;2;{r};{g};{b}m"
 
-# Shorthand
+
 T = Theme
 
 
 # ═══════════════════════════════════════════════════════════════
-# Color shortcuts — convenience methods on Theme
+# Color shortcut methods (staticmethod — call as T.bold("text"))
 # ═══════════════════════════════════════════════════════════════
 
 def _make_shortcuts(cls):
-    """Generate color shortcut methods after class creation."""
     def mk(name, ansi):
         def colorize(text: str) -> str:
-            if not T._enabled: return text
+            if not T._enabled:
+                return text
             return f"{ansi}{text}{T.RESET}"
         setattr(cls, name, staticmethod(colorize))
 
@@ -122,74 +103,65 @@ def _make_shortcuts(cls):
     mk("error", T.ERROR)
     mk("warn", T.WARNING)
     mk("info", T.INFO)
-    mk("primary", T.PRIMARY)
-    mk("secondary", T.SECONDARY)
-    mk("muted", T.TEXT_DIM)
-    mk("title", T.LAVENDER)
+    mk("primary", T.PRIMARY)       # orange
+    mk("secondary", T.SECONDARY)   # blue
+    mk("muted", T.TEXT_MUTED)
+    mk("emphasis", T.TEXT_EMPHASIZED)
     mk("highlight", T.PRIMARY)
     mk("text", T.TEXT)
-    mk("rose", T.ROSEWATER)
-    mk("peach", T.PEACH)
-    mk("sky", T.SKY)
-    mk("green", T.GREEN)
-    mk("red", T.RED)
-    mk("mauve", T.MAUVE)
+    mk("accent", T.ACCENT)
 
 
 _make_shortcuts(Theme)
 
 
-# Add dynamic color lookup method after shortcuts are created
 def _c_method(cls, color_name: str, text: str) -> str:
-    """Dynamic color: T.c('primary', 'hello') → themed hello."""
+    """Dynamic color lookup: T.c('primary', 'hello')."""
     if not cls._enabled:
         return text
-    # Map color name to ANSI constant or method
     mapping = {
         "primary": cls.PRIMARY, "secondary": cls.SECONDARY,
         "success": cls.SUCCESS, "error": cls.ERROR,
         "warn": cls.WARNING, "warning": cls.WARNING,
-        "info": cls.INFO, "muted": cls.TEXT_DIM,
-        "title": cls.LAVENDER, "highlight": cls.PRIMARY,
-        "text": cls.TEXT, "rose": cls.ROSEWATER,
-        "peach": cls.PEACH, "sky": cls.SKY,
-        "green": cls.GREEN, "red": cls.RED,
-        "mauve": cls.MAUVE,
+        "info": cls.INFO, "muted": cls.TEXT_MUTED,
+        "emphasis": cls.TEXT_EMPHASIZED,
+        "highlight": cls.PRIMARY, "text": cls.TEXT,
+        "accent": cls.ACCENT,
     }
     ansi = mapping.get(color_name, cls.TEXT)
-    # If it's a method (like bold, dim), call it
     method = getattr(cls, color_name, None)
     if callable(method) and not isinstance(ansi, str):
         return method(text)
     return f"{ansi}{text}{cls.RESET}"
 
-# Bind as classmethod
-import types
+
 Theme.c = classmethod(lambda cls, name, text: _c_method(cls, name, text))
 
 
 # ═══════════════════════════════════════════════════════════════
-# Terminal — size detection
+# Terminal
 # ═══════════════════════════════════════════════════════════════
 
 class Term:
-    """Terminal size and capability detection."""
-
     _w: int = 80
     _h: int = 24
 
     @classmethod
     def w(cls) -> int:
         if cls._w == 80:
-            try: cls._w = os.get_terminal_size(sys.stdout.fileno()).columns
-            except Exception: pass
+            try:
+                cls._w = os.get_terminal_size(sys.stdout.fileno()).columns
+            except Exception:
+                pass
         return max(cls._w, 40)
 
     @classmethod
     def h(cls) -> int:
         if cls._h == 24:
-            try: cls._h = os.get_terminal_size(sys.stdout.fileno()).lines
-            except Exception: pass
+            try:
+                cls._h = os.get_terminal_size(sys.stdout.fileno()).lines
+            except Exception:
+                pass
         return max(cls._h, 12)
 
     @classmethod
@@ -203,289 +175,343 @@ class Term:
 
 
 # ═══════════════════════════════════════════════════════════════
-# Layout — Layout primitives
+# Layout helpers
 # ═══════════════════════════════════════════════════════════════
 
-class Layout:
-    """Layout primitives for horizontal/vertical stacking.
-
-    Provides horizontal/vertical stacking, borders, padding,
-    and alignment — all using string manipulation.
-    """
-
-    @staticmethod
-    def join_horizontal(parts: List[str],
-                        sep: str = "  ",
-                        width: int = None) -> str:
-        """Join parts horizontally with separator."""
-        w = width or (Term.w() - 4)
-        total_text_len = sum(len(p) for p in parts)
-        padding = w - total_text_len - len(sep) * (len(parts) - 1)
-        pad_per_gap = max(0, padding // max(1, len(parts) - 1))
-        return sep.join(parts)
-
-    @staticmethod
-    def join_vertical(lines: List[str], padding: int = 0) -> str:
-        """Stack lines vertically with optional left padding."""
-        prefix = " " * padding
-        return "\n".join(prefix + line if line else "" for line in lines)
-
-    @staticmethod
-    def center(text: str, width: int) -> str:
-        """Center text within given width."""
-        visible = len(text)
-        # Strip ANSI codes for length calculation
-        clean = _strip_ansi(text)
-        pad = max(0, width - len(clean))
-        left = pad // 2
-        right = pad - left
-        return " " * left + text + " " * right
-
-    @staticmethod
-    def left_align(text: str, width: int) -> str:
-        """Left-align text within width."""
-        clean = _strip_ansi(text)
-        pad = max(0, width - len(clean))
-        return text + " " * pad
-
-    @staticmethod
-    def right_align(text: str, width: int) -> str:
-        """Right-align text within width."""
-        clean = _strip_ansi(text)
-        pad = max(0, width - len(clean))
-        return " " * pad + text
-
-
 def _strip_ansi(s: str) -> str:
-    """Remove ANSI escape sequences from string for length calc."""
-    import re
+    """Remove ANSI escapes for width calculation."""
     return re.sub(r"\033\[[^m]*m", "", s)
 
 
+def _visible_len(s: str) -> int:
+    """Get visible (non-ANSI) length of string."""
+    return len(_strip_ansi(s))
+
+
+def _pad(s: str, width: int, align: str = "left") -> str:
+    """Pad or truncate string to fit width."""
+    vlen = _visible_len(s)
+    if vlen >= width:
+        return s + "…" if len(s) > width else s[:width]
+    pad = width - vlen
+    if align == "center":
+        return " " * (pad // 2) + s + " " * (pad - pad // 2)
+    elif align == "right":
+        return " " * pad + s
+    return s + " " * pad
+
+
 # ═══════════════════════════════════════════════════════════════
-# Box — Unicode bordered panels
+# SplitPane — OpenCode-style horizontal/vertical split layout
 # ═══════════════════════════════════════════════════════════════
 
-class Box:
-    """Border panel renderer with rounded corners.
+class SplitPane:
+    """Split layout: horizontal (left|right) or vertical (top|bottom).
 
-    Styles:
-      'round'  → ╭╮╰╯ rounded corners (default)
-      'double' → ╔═╗╚═╝ double-line (for headers/focus)
-      'single' → ┌┐└┘ single-line (for regular content)
-      'ascii'  → +-+|+ ASCII fallback
+    Mimics OpenCode's NewSplitPane from internal/tui/layout/split.go.
+    Default ratios match OpenCode: 0.7 main / 0.3 sidebar.
     """
 
-    # Character sets
-    ROUND_TL = "╭"; ROUND_TR = "╮"; ROUND_BL = "╰"; ROUND_BR = "╯"
-    ROUND_L = "│"; ROUND_R = "│"
-    DOUBLE_TL = "╔"; DOUBLE_TR = "╗"; DOUBLE_BL = "╚"; DOUBLE_BR = "╝"
-    DOUBLE_L = "║"; DOUBLE_R = "║"
-    SINGLE_TL = "┌"; SINGLE_TR = "┐"; SINGLE_BL = "└"; SINGLE_BR = "┘"
-    SINGLE_L = "│"; SINGLE_R = "│"
-    ASCII_TL = "+"; ASCII_TR = "+"; ASCII_BL = "+"; ASCII_BR = "+"
-    ASCII_L = "|"; ASCII_R = "|"
+    def __init__(self, ratio: float = 0.7):
+        self.ratio = ratio          # horizontal: left gets this fraction
+        self.vertical_ratio = 0.85  # vertical: top gets this fraction
 
-    @classmethod
-    def chars(cls, style: str = "round") -> Dict[str, str]:
-        """Get character set for given border style."""
-        styles = {
-            "round": {
-                "tl": cls.ROUND_TL, "tr": cls.ROUND_TR,
-                "bl": cls.ROUND_BL, "br": cls.ROUND_BR,
-                "l": cls.ROUND_L, "r": cls.ROUND_R,
-                "hl": "├", "hr": "┤", "vl": "╰", "vr": "╯",
-            },
-            "double": {
-                "tl": cls.DOUBLE_TL, "tr": cls.DOUBLE_TR,
-                "bl": cls.DOUBLE_BL, "br": cls.DOUBLE_BR,
-                "l": cls.DOUBLE_L, "r": cls.DOUBLE_R,
-                "hl": "╠", "hr": "╣", "vl": "╚", "vr": "╝",
-            },
-            "single": {
-                "tl": cls.SINGLE_TL, "tr": cls.SINGLE_TR,
-                "bl": cls.SINGLE_BL, "br": cls.SINGLE_BR,
-                "l": cls.SINGLE_L, "r": cls.SINGLE_R,
-                "hl": "├", "hr": "┤", "vl": "└", "vr": "┘",
-            },
-            "ascii": {
-                "tl": cls.ASCII_TL, "tr": cls.ASCII_TR,
-                "bl": cls.ASCII_BL, "br": cls.ASCII_BR,
-                "l": cls.ASCII_L, "r": cls.ASCII_R,
-                "hl": "+", "hr": "+", "vl": "+", "vr": "+",
-            },
-        }
-        return styles.get(style, styles["round"])
+    def render(self, left: str, right: str,
+               w: int = None, h: int = None) -> str:
+        """Render horizontal split: left panel | right panel."""
+        w = w or Term.w()
+        h = h or Term.h()
 
-    @staticmethod
-    def panel(title: str, lines: List[str],
-              width: int = None, style: str = "round",
-              title_style: str = "double",
-              color: str = "") -> str:
-        """Render a titled bordered panel."""
-        w = width or (Term.w() - 4)
-        ch = Box.chars(style)
-        inner = w - 4  # -2 borders, -2 padding
+        side_w = max(24, int(w * (1 - self.ratio)))
+        main_w = w - side_w - 1  # -1 for divider
+
+        left_lines = left.split("\n")
+        right_lines = right.split("\n")
+
         out: List[str] = []
+        for i in range(max(len(left_lines), len(right_lines))):
+            l_line = left_lines[i] if i < len(left_lines) else ""
+            r_line = right_lines[i] if i < len(right_lines) else ""
 
-        # Top border with title
-        tch = Box.chars(title_style)
-        top = f"{ch['tl']}{'─' * (inner + 2)}{ch['tr']}"
-        out.append(top)
+            l_padded = _pad(l_line, side_w)
+            divider = T.dim("│") if i == 0 or i < len(left_lines) or i < len(right_lines) else "│"
+            r_padded = _pad(r_line, main_w)
 
-        # Title row (if provided)
-        if title:
-            colored_title = f"{T.bold(T.title(title))}" if title else ""
-            title_line = f"{ch['l']} {Layout.center(colored_title, inner + 2)} {ch['r']}"
-            out.append(title_line)
-
-            # Separator under title
-            sep = f"{tch['hl']}{'─' * (inner + 2)}{tch['vr']}"
-            out.append(sep)
-
-        # Content lines
-        for line in lines:
-            out.append(f"{ch['l']} {_pad_line(line, inner)}{ch['r']}")
-
-        # Bottom border
-        bottom = f"{ch['vl']}{'─' * (inner + 2)}{ch['br']}"
-        out.append(bottom)
+            out.append(f"{l_padded} {divider} {r_padded}")
 
         return "\n".join(out)
 
-    @staticmethod
-    def dialog(title: str, body: List[str],
-               width: int = None, height: int = None,
-               scroll_offset: int = 0) -> str:
-        """Render a centered dialog overlay with scroll support.
+    def render_vertical(self, top: str, bottom: str,
+                        w: int = None, h: int = None) -> str:
+        """Render vertical split: top panel / bottom panel."""
+        w = w or Term.w()
+        h = h or Term.h()
 
-        Args:
-            title: Dialog title shown in header bar.
-            body: List of content lines to display.
-            width: Dialog width in chars (auto if None).
-            height: Max dialog height in chars (auto-fits to screen if None).
-            scroll_offset: Number of body lines to skip (for pagination).
+        top_h = max(3, int(h * self.vertical_ratio))
+        bottom_h = h - top_h - 1  # -1 for divider
 
-        Returns:
-            Rendered dialog string. Content is clipped to fit terminal height.
-            Scroll indicators (▲/▼) are shown when content overflows.
-        """
-        w = width or min(60, Term.w() - 8)
-        term_h = Term.h()
-        # Budget: 2 border lines + 1-2 title lines + 1 hint line + 1 bottom border = 5-6 overhead
-        max_body_lines = term_h - 6
-        ch = Box.chars("round")
-        inner = w - 4
+        top_lines = top.split("\n")
+        bottom_lines = bottom.split("\n")
 
         out: List[str] = []
 
+        # Top section
+        for line in top_lines[:top_h]:
+            out.append(_pad(line, w))
+
+        # Divider
+        out.append(T.dim("─" * (w // 2)) + "─" * (w - w // 2))
+
+        # Bottom section
+        for line in bottom_lines[:bottom_h]:
+            out.append(_pad(line, w))
+
+        return "\n".join(out)
+
+
+# ═══════════════════════════════════════════════════════════════
+# Container — padded box with optional per-side borders
+# ═══════════════════════════════════════════════════════════════
+
+class Container:
+    """Wrap content with configurable padding and per-side borders.
+
+    Mirrors OpenCode's layout.Container from internal/tui/layout/container.go.
+    Used for messages panel, editor, sidebar sections.
+    """
+
+    def __init__(self, content: str = "",
+                 pad_top: int = 0, pad_right: int = 0,
+                 pad_bottom: int = 0, pad_left: int = 0,
+                 border_top: bool = False,
+                 border_right: bool = False,
+                 border_bottom: bool = False,
+                 border_left: bool = False,
+                 width: int = None):
+        self.content = content
+        self.pad_top = pad_top
+        self.pad_right = pad_right
+        self.pad_bottom = pad_bottom
+        self.pad_left = pad_left
+        self.border_top = border_top
+        self.border_right = border_right
+        self.border_bottom = border_bottom
+        self.border_left = border_left
+        self.width = width
+
+    def render(self) -> str:
+        lines = self.content.split("\n") if self.content else [""]
+        w = self.width or Term.w()
+
+        # Apply borders (shrink inner width)
+        inner_w = w
+        if self.border_left:
+            inner_w -= 1
+        if self.border_right:
+            inner_w -= 1
+
+        out: List[str] = []
+
+        # Top padding
+        for _ in range(self.pad_top):
+            out.append("")
+
         # Top border
-        out.append(f"{ch['tl']}{'═' * inner}{ch['tr']}")
+        if self.border_top:
+            bl = "┌" if self.border_left else "─"
+            br = "┐" if self.border_right else "─"
+            mid = "─" * max(0, inner_w)
+            out.append(f"{bl}{mid}{br}")
 
-        # Title bar (double-line for emphasis)
-        if title:
-            out.append(f"{ch['l']} {T.bold(T.primary(title)):^{inner}s} {ch['r']}")
-            out.append(f"{ch['l']}{'─' * inner}{ch['r']}")
-            title_lines = 2
-        else:
-            title_lines = 0
+        # Content lines with left/right borders and padding
+        for line in lines:
+            prefix = "│" if self.border_left else ""
+            suffix = "│" if self.border_right else ""
+            pad_l = " " * self.pad_left
+            pad_r = " " * self.pad_right
+            inner = _pad(line, inner_w - self.pad_left - self.pad_right)
+            out.append(f"{prefix}{pad_l}{inner}{pad_r}{suffix}")
 
-        # Calculate visible window — clip body to fit available space
+        # Bottom border
+        if self.border_bottom:
+            bl = "└" if self.border_left else "─"
+            br = "┘" if self.border_right else "─"
+            mid = "─" * max(0, inner_w)
+            out.append(f"{bl}{mid}{br}")
+
+        # Bottom padding
+        for _ in range(self.pad_bottom):
+            out.append("")
+
+        return "\n".join(out)
+
+
+# ═══════════════════════════════════════════════════════════════
+# Box — bordered panels (rounded for dialogs)
+# ═══════════════════════════════════════════════════════════════
+
+class Box:
+    """Border panels using Unicode box-drawing characters."""
+
+    ROUND = {"tl": "╭", "tr": "╮", "bl": "╰", "br": "╯",
+             "l": "│", "r": "│",
+             "hl": "├", "hr": "┤", "vl": "╰", "vr": "╯"}
+    DOUBLE = {"tl": "╔", "tr": "╗", "bl": "╚", "br": "╝",
+              "l": "║", "r": "║",
+              "hl": "╠", "hr": "╣", "vl": "╚", "vr": "╝"}
+    SINGLE = {"tl": "┌", "tr": "┐", "bl": "└", "br": "┘",
+              "l": "│", "r": "│",
+              "hl": "├", "hr": "┤", "vl": "└", "vr": "┘"}
+
+    @staticmethod
+    def dialog(title: str, body: List[str],
+               scroll_offset: int = 0) -> str:
+        """Centered rounded-border dialog with viewport scrolling.
+
+        Auto-sizes to fit terminal height. Shows ▲/▼ indicators
+        when content overflows. This is the primary UI primitive.
+        """
+        term_w = Term.w()
+        term_h = Term.h()
+
+        # Dialog width: fit within terminal with margin
+        w = min(term_w - 4, max(50, term_w - 10))
+
+        ch = Box.ROUND
+        inner = w - 4  # 2 padding each side
+
+        out: List[str] = []
+        out.append(f"{ch['tl']}{'─' * inner}{ch['tr']}")
+
+        # Title bar
+        title_text = f" {T.bold(T.primary(title))} "
+        out.append(f"{ch['l']}{_pad(title_text, inner + 2, 'center')}{ch['r']}")
+        out.append(f"{ch['l']}{'─' * inner}{ch['r']}")
+
+        # Available height for body content
+        overhead = 5  # top border + title + sep + hint + bottom border
+        usable_h = term_h - overhead
         total_body = len(body)
-        usable_height = max_body_lines - title_lines
 
-        # Ensure scroll_offset is within bounds
+        # Clamp scroll offset
         if scroll_offset < 0:
             scroll_offset = 0
         elif scroll_offset > 0 and scroll_offset >= total_body:
-            scroll_offset = max(0, total_body - usable_height)
+            scroll_offset = max(0, total_body - usable_h)
 
-        # Determine which body lines to show
-        if total_body <= usable_height:
-            # Everything fits — show all
+        # Determine visible window
+        if total_body <= usable_h:
             visible = body
-            has_more_above = False
-            has_more_below = False
+            show_above = False
+            show_below = False
         else:
-            # Need to paginate — show a window of lines
-            end_offset = scroll_offset + usable_height
-            if end_offset > total_body:
-                end_offset = total_body
-                scroll_offset = max(0, total_body - usable_height)
+            end = scroll_offset + usable_h
+            if end > total_body:
+                end = total_body
+                scroll_offset = max(0, total_body - usable_h)
+            visible = body[scroll_offset:end]
+            show_above = scroll_offset > 0
+            show_below = end < total_body
 
-            visible = body[scroll_offset:end_offset]
-            has_more_above = scroll_offset > 0
-            has_more_below = end_offset < total_body
+        # Scroll indicator above
+        if show_above:
+            out.append(f"{ch['l']}"
+                       f"{_pad(T.dim(f'▲ {scroll_offset} more'), inner)}{ch['r']}")
 
-        # Scroll indicator: more items above
-        if has_more_above:
-            out.append(f"{ch['l']} {T.dim(' ▲ ' + str(scroll_offset) + ' more above'):^{inner}s} {ch['r']}")
-
-        # Visible body lines
+        # Body lines
         for line in visible:
-            out.append(f"{ch['l']} {_pad_line(line, inner)}{ch['r']}")
+            out.append(f"{ch['l']} {_pad(line, inner)}{ch['r']}")
 
-        # Scroll indicator: more items below
-        if has_more_below:
+        # Scroll indicator below
+        if show_below:
             remaining = total_body - scroll_offset - len(visible)
-            out.append(f"{ch['l']} {T.dim(' ▼ ' + str(remaining) + ' more below'):^{inner}s} {ch['r']}")
+            out.append(f"{ch['l']}"
+                       f"{_pad(T.dim(f'▼ {remaining} more'), inner)}{ch['r']}")
 
-        # Fill remaining space so dialog has consistent size
-        shown_lines = len(visible) + (1 if has_more_above else 0) + (1 if has_more_below else 0)
-        fill_count = max(0, usable_height - shown_lines)
-        for _ in range(fill_count):
+        # Fill remaining space
+        shown = len(visible) + (1 if show_above else 0) + (1 if show_below else 0)
+        fill = max(0, usable_h - shown)
+        for _ in range(fill):
             out.append(f"{ch['l']}{' ' * inner}{ch['r']}")
 
-        # Bottom border
+        # Hint line
+        out.append(f"{ch['l']}{'─' * inner}{ch['r']}")
         out.append(f"{ch['vl']}{'─' * inner}{ch['br']}")
 
         return "\n".join(out)
 
     @staticmethod
-    def simple(lines: List[str], width: int = None,
-               style: str = "single") -> str:
-        """Simple border around lines (no title)."""
-        w = width or (Term.w() - 4)
-        ch = Box.chars(style)
+    def panel(title: str, body: List[str], width: int = None) -> str:
+        """Simple titled rounded panel (no scrolling)."""
+        w = width or Term.w() - 4
+        ch = Box.ROUND
         inner = w - 4
         out = [f"{ch['tl']}{'─' * inner}{ch['tr']}"]
-        for line in lines:
-            out.append(f"{ch['l']} {_pad_line(line, inner)}{ch['r']}")
-        out.append(f"{ch['bl']}{'─' * inner}{ch['br']}")
+        out.append(f"{ch['l']} {_pad(T.bold(title), inner + 2, 'center')} {ch['r']}")
+        out.append(f"{ch['l']}{'─' * inner}{ch['r']}")
+        for line in body:
+            out.append(f"{ch['l']} {_pad(line, inner)}{ch['r']}")
+        out.append(f"{ch['vl']}{'─' * inner}{ch['br']}")
         return "\n".join(out)
-
-    @staticmethod
-    def horizontal_rule(width: int = None, char: str = "─",
-                       double: bool = False) -> str:
-        """A horizontal divider line."""
-        w = width or (Term.w() - 4)
-        c = "═" if double else char
-        return c * w
-
-
-def _pad_line(line: str, width: int) -> str:
-    """Pad or truncate a line to fit within width."""
-    clean = _strip_ansi(line)
-    if len(clean) >= width:
-        # Truncate with ellipsis
-        return line[:width - 1] + "…" if len(line) > width else line[:width]
-    return line + " " * (width - len(clean))
 
 
 # ═══════════════════════════════════════════════════════════════
-# Keyboard — cross-platform key reading
+# StatusBar — single-row segmented status bar (OpenCode style)
+# ═══════════════════════════════════════════════════════════════
+
+class StatusBar:
+    """Bottom status bar — matches OpenCode's component/core/status.go.
+
+    Format: [help] [message......flex...] [info-right] [model]
+    Always exactly 1 row tall.
+    """
+
+    @staticmethod
+    def render(hints: str = "", message: str = "",
+               model: str = "") -> str:
+        w = Term.w()
+
+        # Left: hints or empty
+        left = hints or ""
+
+        # Center: message (flexible, auto-truncated)
+        msg = message or ""
+
+        # Right: model name
+        right = model or ""
+
+        # Build the bar
+        left_clean = _visible_len(left)
+        right_clean = _visible_len(right)
+        msg_clean = _visible_len(msg)
+        mid_space = w - left_clean - right_clean - 2
+        if mid_space < 0:
+            mid_space = 0
+
+        # Truncate message if needed
+        if msg_clean > mid_space:
+            msg = msg[:mid_space - 1] + "…"
+
+        mid = " " * (mid_space - msg_clean) if mid_space > msg_clean else ""
+
+        bar = (f"{T.BG_DARK}{T.BORDER}{left}"
+                f"{msg}{mid}"
+                f"{T.muted(right)}"
+                f"{T.BORDER}{T.RESET}")
+        return bar
+
+
+# ═══════════════════════════════════════════════════════════════
+# Keyboard — cross-platform key reader
 # ═══════════════════════════════════════════════════════════════
 
 class Keyboard:
-    """Cross-platform single-keystroke reader."""
-
     @staticmethod
     def has_tty() -> bool:
         return hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
 
     @staticmethod
     def getkey() -> str:
-        """Read one keystroke. Returns char or special key name."""
         if not Keyboard.has_tty():
             try:
                 line = input("")
@@ -507,7 +533,6 @@ class Keyboard:
             if not ch:
                 return ""
 
-            # Escape sequences
             if ch == "\x1b":
                 seq = ""
                 for _ in range(6):
@@ -520,182 +545,100 @@ class Keyboard:
                     if len(seq) > 5:
                         break
 
-                if seq.endswith("A"): return "up"
-                if seq.endswith("B"): return "down"
-                if seq.endswith("C"): return "right"
-                if seq.endswith("D"): return "left"
+                if seq.endswith("A"):
+                    return "up"
+                if seq.endswith("B"):
+                    return "down"
+                if seq.endswith("C"):
+                    return "right"
+                if seq.endswith("D"):
+                    return "left"
                 if seq.endswith("~"):
-                    if "[5" in seq: return "page_up"
-                    if "[6" in seq: return "page_down"
-                    if "[1" in seq: return "home"
-                    if "[3" in seq: return "delete"
-                    if "[4" in seq: return "end"
+                    if "[5" in seq:
+                        return "page_up"
+                    if "[6" in seq:
+                        return "page_down"
+                    if "[1" in seq:
+                        return "home"
+                    if "[3" in seq:
+                        return "delete"
+                    if "[4" in seq:
+                        return "end"
                 return "escape"
 
-            if ch == "\r": return "enter"
-            if ch == "\t": return "tab"
-            if ch == "\x7f": return "backspace"
+            if ch == "\r":
+                return "enter"
+            if ch == "\t":
+                return "tab"
+            if ch == "\x7f":
+                return "backspace"
             if ch == "\x03":
                 raise KeyboardInterrupt
-            if ch == "\x04": raise KeyboardInterrupt  # Ctrl+D
+            if ch == "\x04":
+                raise KeyboardInterrupt
 
             return ch
 
         finally:
             termios.tcsetattr(fd, termios.TCSANOW, old)
 
-    @staticmethod
-    def getkey_blocking(timeout: float = 30.0) -> str:
-        """Blocking read with timeout."""
-        import select
-        if select.select([sys.stdin], [], [], timeout)[0]:
-            return Keyboard.getkey()
-        return ""
+
+# ═══════════════════════════════════════════════════════════════
+# Screen — full-frame renderer with SplitPane + StatusBar
+# ═══════════════════════════════════════════════════════════════
+
+class Screen:
+    """Full-screen frame renderer.
+
+    Layout (matches OpenCode root view):
+    ┌──────────────────────────────────────────────┐
+    │                  (content area)                │
+    │   SplitPane:  sidebar(30%) │ main(70%)        │
+    ├──────────────────────────────────────────────┤
+    │ StatusBar: [hints...msg.............model]    │
+    └──────────────────────────────────────────────┘
+    """
+
+    def __init__(self):
+        self.w = Term.w()
+        self.h = Term.h()
+
+    def render(self, sidebar: str = "", main: str = "",
+              hints: str = "", message: str = "",
+              model: str = "") -> None:
+        """Render complete frame: split pane + status bar."""
+        Term.clear()
+
+        w = self.w
+        h = self.h
+
+        # Content area (leave 1 row for status bar)
+        content_h = h - 1
+
+        if sidebar and main:
+            # Render split pane, clipped to content height
+            pane = SplitPane(ratio=0.70)
+            full = pane.render(sidebar, main, w=w, h=content_h)
+            lines = full.split("\n")
+            for line in lines[:content_h]:
+                print(line)
+        elif main:
+            for line in main.split("\n")[:content_h]:
+                print(line)
+        elif sidebar:
+            for line in sidebar.split("\n")[:content_h]:
+                print(line)
+
+        # Status bar (always last row)
+        print(StatusBar.render(hints=hints, message=message, model=model))
+        sys.stdout.flush()
 
 
 # ═══════════════════════════════════════════════════════════════
-# Menu — paginated list with cursor navigation
-# ═══════════════════════════════════════════════════════════════
-
-class Menu:
-    """Interactive selection list with keyboard navigation."""
-
-    def __init__(self, items: List[str], title: str = "",
-                 page_size: int = 12):
-        self.items = items
-        self.title = title
-        self.page_size = page_size
-        self.cursor = 0
-        self.page = 0
-
-    @property
-    def pages(self) -> int:
-        return max(1, (len(self.items) + self.page_size - 1) // self.page_size)
-
-    @property
-    def visible(self) -> List[str]:
-        start = self.page * self.page_size
-        return self.items[start:start + self.page_size]
-
-    def render(self) -> str:
-        """Render menu to string."""
-        lines: List[str] = []
-        if self.title:
-            lines.append(f"  {T.bold(self.title)}")
-            lines.append("")
-        for idx, item in enumerate(self.visible):
-            marker = "▸ " if idx == self.cursor else "  "
-            sel = item if idx == self.cursor else item
-            if idx == self.cursor:
-                lines.append(f"{marker}{T.primary(sel)}")
-            else:
-                lines.append(f"{marker}{T.text(sel)}")
-        if self.pages > 1:
-            lines.append("")
-            lines.append(f"  {T.dim(f'Page {self.page + 1}/{self.pages}')}")
-        return "\n".join(lines)
-
-    def handle_key(self, key: str) -> Tuple[int, str]:
-        """Process key. Returns (new_cursor, action)."""
-        n = len(self.visible)
-        if key in ("enter", " "):
-            return (self.cursor, "select" if n > 0 else "none")
-        if key in ("escape", "q"):
-            return (self.cursor, "back")
-        if key in ("up", "k", "K"):
-            return (max(0, self.cursor - 1), "")
-        if key in ("down", "j", "J", "\t"):
-            return (min(n - 1, self.cursor + 1), "")
-        if key == "home" or key == "g":
-            self.page = 0; return (0, "")
-        if key == "end" or key == "G":
-            self.page = max(0, self.pages - 1); return (min(n - 1, (self.pages - 1) * self.page_size), "")
-        try:
-            num = int(key)
-            if 1 <= num <= n:
-                return (num - 1, "select")
-        except ValueError:
-            pass
-        return (self.cursor, "")
-
-
-# ═══════════════════════════════════════════════════════════════
-# Spinner — animated loading indicator
-# ═══════════════════════════════════════════════════════════════
-
-class Spinner:
-    """Animated spinner for async operations."""
-
-    FRAMES = ["⠋", "⠙", "⠸", "⠴", "⠦", "⠖", "⠞", "⠟"]
-
-    def __init__(self, label: str = ""):
-        self.label = label
-        self._frame = 0
-        self._running = False
-        self._thread: Optional[threading.Thread] = None
-
-    def start(self):
-        self._running = True
-        self._thread = threading.Thread(target=self._spin, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        self._running = False
-        if self._thread:
-            self._thread.join(timeout=0.5)
-            self._thread = None
-
-    def _spin(self):
-        while self._running:
-            print(f"\r  {self.FRAMES[self._frame % len(self.FRAMES)]} "
-                  f"{self.label}   ", end="", flush=True)
-            self._frame += 1
-            _time.sleep(0.08)
-
-    @staticmethod
-    def done(msg: str = "Done.") -> str:
-        print(f"\r  {'✓':>8s}  {msg}")
-        return msg
-
-
-# ═══════════════════════════════════════════════════════════════
-# ProgressBar — visual progress feedback
-# ═══════════════════════════════════════════════════════════════
-
-class ProgressBar:
-    """Progress bar with label."""
-
-    CHARS = "█▓▒░▏"
-
-    def __init__(self, total: int = 100, width: int = 40, label: str = ""):
-        self.total = total
-        self.width = width
-        self.label = label
-        self.current = 0
-        self.start = _time.time()
-
-    def update(self, current: int, label: str = "") -> str:
-        self.current = current
-        self.label = label or self.label
-        pct = min(100, current * 100 // max(self.total, 1))
-        filled = int(pct * self.width / 100)
-        empty = self.width - filled
-        bar = T.primary("█" * filled) + T.dim("░" * empty)
-        lbl = f" {self.label}" if self.label else ""
-        elapsed = _time.time() - self.start
-        return f"{bar}{lbl}{T.dim(f' ({elapsed:.1f}s)')}\n"
-
-    def done(self, msg: str = "Done.") -> str:
-        out = self.update(self.total, msg)
-        return f"{out}{T.success(' ✓ ' + msg)}\n"
-
-
-# ═══════════════════════════════════════════════════════════════
-# Sidebar — left navigation panel
+# Sidebar — left nav panel (OpenCode style)
 # ═══════════════════════════════════════════════════════════════
 
 class SidebarItem:
-    """A single sidebar navigation entry."""
     def __init__(self, icon: str, label: str, key: str = "",
                  active: bool = False, badge: str = ""):
         self.icon = icon
@@ -706,181 +649,120 @@ class SidebarItem:
 
 
 class Sidebar:
-    """Left sidebar navigation panel.
+    """Left navigation panel — OpenCode style with header + items + footer."""
 
-    Renders as a vertical bordered panel with icon+label items,
-    highlight for active item.
-    """
-
-    def __init__(self, items: List[SidebarItem], width: int = 24,
-                 title: str = " zClaude"):
+    def __init__(self, items: List[SidebarItem], title: str = " zClaude",
+                 active_idx: int = 0):
         self.items = items
-        self.width = width
         self.title = title
-        self.cursor = 0
+        self.active_idx = active_idx
 
-    @property
-    def count(self) -> int:
-        return len(self.items)
-
-    def render(self, active_idx: int = 0) -> str:
-        """Render the full sidebar panel."""
-        ch = Box.chars("round")
-        w = self.width
-        inner = w - 2  # -2 for borders on each side
+    def render(self) -> str:
+        w = 26  # fixed sidebar width (matches OpenCode ~30% of 80col)
+        inner = w - 2
+        ch = Box.ROUND
         lines: List[str] = []
 
         # Top border
-        lines.append(f"{ch['tl']}{'═' * inner}{ch['tr']}")
+        lines.append(f"{ch['tl']}{'─' * inner}{ch['tr']}")
 
-        # Title
-        title_str = f"{T.bold(T.mauve(' ◆ '))}{T.title(self.title)}"
-        lines.append(f"{ch['l']}{Layout.center(title_str, inner)}{ch['r']}")
+        # Header
+        header = f" {T.primary('◆')} {T.bold(self.title)}"
+        lines.append(f"{ch['l']}{_pad(header, inner)}{ch['r']}")
         lines.append(f"{ch['l']}{'─' * inner}{ch['r']}")
 
         # Nav items
         for idx, item in enumerate(self.items):
-            is_active = (idx == active_idx)
+            is_active = (idx == self.active_idx)
             if is_active:
-                prefix = f"{T.BG_HIGHLIGHT}{T.primary('▸')}"
-                label_text = T.bold(item.label)
-                suffix = T.RESET
+                marker = T.primary("▸")
+                lbl = T.bold(item.label)
+                bg = T.BG_HIGHLIGHT
             else:
-                prefix = f" {item.icon}"
-                label_text = T.text(item.label)
-                suffix = ""
+                marker = item.icon
+                lbl = T.text(item.label)
+                bg = ""
 
-            key_hint = f" {T.dim(item.key)}" if item.key else ""
-            line = f"{prefix} {label_text}{key_hint}"
-            lines.append(f"{ch['l']}{line:<{inner}s}{ch['r']}{suffix}")
+            key_str = f" {T.dim(item.key)}" if item.key else ""
+            badge_str = f" {T.secondary(item.badge)}" if item.badge else ""
 
-        # Fill remaining
-        fill = max(0, Term.h() - len(lines) - 3)
+            line = f"{bg}{marker} {lbl}{key_str}{badge_str}{T.RESET}"
+            lines.append(f"{ch['l']}{_pad(line, inner)}{ch['r']}")
+
+        # Fill remaining space
+        total_items = len(lines) - 3  # minus top border, header, separator
+        fill = max(0, Term.h() - total_items - 4)  # -4 for bottom elements
         for _ in range(fill):
             lines.append(f"{ch['l']}{' ' * inner}{ch['r']}")
 
-        # Bottom border
-        lines.append(f"{ch['vl']}{'─' * inner}{ch['br']}")
+        # Separator before footer
+        lines.append(f"{ch['l']}{'─' * inner}{ch['r']}")
 
-        # Version footer
-        ver = T.dim("v1.0")
-        lines.append(f"{ch['l']}{Layout.center(ver, inner)}{ch['r']}")
+        # Footer
+        footer = f" {T.dim('v' + '1.0' if True else '')}"
+        lines.append(f"{ch['l']}{_pad(footer, inner)}{ch['r']}")
+        lines.append(f"{ch['vl']}{'─' * inner}{ch['br']}")
 
         return "\n".join(lines)
 
 
 # ═══════════════════════════════════════════════════════════════
-# StatusBar — bottom status bar
+# Welcome banner (shown once at startup)
 # ═══════════════════════════════════════════════════════════════
 
-class StatusBar:
-    """Bottom status bar showing context info and key hints."""
-
-    @staticmethod
-    def render(left: str = "", right: str = "",
-                hints: str = "") -> str:
-        w = Term.w()
-        left_part = left or ""
-        right_part = right or ""
-        hints_part = hints or " ↑↓ Navigate · Enter Select · Esc Back · q Quit"
-        mid_pad = w - len(_strip_ansi(left_part)) - len(_strip_ansi(right_part)) - len(_strip_ansi(hints_part)) - 4
-        mid = " " * max(0, mid_pad)
-        return f"{T.BG_DARK}{T.BORDER}{T.text(left_part)}{mid}" \
-               f"{T.muted(right_part)}{T.muted(hints_part)}" \
-               f"{T.BORDER}{T.RESET}"
+def welcome_banner() -> str:
+    """Render welcome banner (rounded border, shown once)."""
+    w = Term.w()
+    ch = Box.ROUND
+    inner = w - 4
+    lines = []
+    lines.append(f"{ch['tl']}{'═' * inner}{ch['tr']}")
+    title = f" {T.primary(' ◆ ')}{T.bold(' zClaude ')}"
+    sub = T.dim("Universal AI Launcher — Modern TUI")
+    lines.append(f"{ch['l']}{_pad(title, inner + 2, 'center')}{ch['r']}")
+    lines.append(f"{ch['hl']}{'═' * inner}{ch['vr']}")
+    lines.append(f"{ch['l']}{_pad(sub, inner + 2, 'center')}{ch['r']}")
+    lines.append(f"{ch['vl']}{'─' * inner}{ch['br']}")
+    return "\n".join(lines)
 
 
 # ═══════════════════════════════════════════════════════════════
-# Screen buffer — virtual screen for frame rendering
+# Scroll helpers for list views
 # ═══════════════════════════════════════════════════════════════
 
-class Screen:
-    """Virtual screen buffer for frame-by-frame rendering.
+def auto_scroll(state: Dict, total_items: int) -> None:
+    """Keep cursor visible within scroll window."""
+    cursor = state["list_cursor"]
+    offset = state.get("scroll_offset", 0)
+    usable = Term.h() - 9  # space for dialog chrome
+    if usable < 3:
+        usable = 3
 
-    Manages the full viewport: header + body (sidebar+main) + statusbar.
-    Handles clear-to-end-of-screen for flicker-free redraws.
-    """
+    if cursor < offset:
+        state["scroll_offset"] = cursor
+    elif cursor >= offset + usable:
+        state["scroll_offset"] = cursor - usable + 1
 
-    def __init__(self):
-        self.lines: List[str] = []
-        self.w = Term.w()
-        self.h = Term.h()
-
-    def clear(self):
-        """Reset screen buffer."""
-        self.lines = []
-        self.w = Term.w()
-        self.h = Term.h()
-
-    def write(self, text: str = ""):
-        """Add text to buffer (auto-split on newlines)."""
-        if text:
-            for line in text.split("\n"):
-                self.lines.append(line)
-        else:
-            self.lines.append("")
-
-    def writeln(self, text: str = ""):
-        """Write a line (adds newline)."""
-        self.write(text + ("\n" if text else ""))
-
-    def newlines(self, count: int = 1):
-        """Add blank lines."""
-        for _ in range(count):
-            self.lines.append("")
-
-    def flush(self, footer: str = "", hints: str = ""):
-        """Render the complete screen to terminal.
-
-        Clears screen, writes all lines, draws status bar.
-        """
-        Term.clear()
-
-        # Write all content lines
-        content = "\n".join(self.lines)
-        if content:
-            sys.stdout.write(content + "\n")
-
-        # Draw status bar at bottom
-        if footer or hints:
-            sys.stdout.write(footer if footer else "")
-        elif hints:
-            sys.stdout.write(StatusBar.render(hints=hints))
-
-        sys.stdout.flush()
-
-    def render_frame(self, sidebar: str = "", main: str = "",
-                      header: str = "", hints: str = ""):
-        """Convenience: render a complete frame with sidebar+main layout."""
-        self.clear()
-
-        # Header (optional)
-        if header:
-            self.writeln(header)
-
-        # Split view: sidebar | main
-        if sidebar and main:
-            # Calculate heights
-            total_h = self.h - 3  # -3 for status bar
-
-            # Render sidebar (truncated to fit)
-            side_parts = sidebar.split("\n")
-            for line in side_parts:
-                self.writeln(line)
-
-            # Main content fills remaining space
-            main_parts = main.split("\n")
-            for line in main_parts:
-                self.writeln(line)
-        elif main:
-            for line in main.split("\n"):
-                self.writeln(line)
-        elif sidebar:
-            for line in sidebar.split("\n"):
-                self.writeln(line)
-
-        self.flush(hints=hints)
+    state["scroll_offset"] = max(0, state["scroll_offset"])
+    state["scroll_offset"] = min(
+        state["scroll_offset"], max(0, total_items - usable))
 
 
-# Auto-detect capabilities on import
+def handle_scroll(state: Dict, key: str, total_items: int) -> bool:
+    """Handle Page Up / Page Down. Returns True if consumed."""
+    if key not in ("page_up", "page_down"):
+        return False
+    usable = Term.h() - 9
+    if usable < 3:
+        usable = 3
+    offset = state.get("scroll_offset", 0)
+    if key == "page_up":
+        state["scroll_offset"] = max(0, offset - usable)
+    else:
+        state["scroll_offset"] = min(
+            max(0, total_items - usable), offset + usable)
+    return True
+
+
+# Auto-detect on import
 Theme.detect()
