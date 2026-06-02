@@ -494,7 +494,7 @@ class StatusBar:
 
         mid = " " * (mid_space - msg_clean) if mid_space > msg_clean else ""
 
-        bar = (f"{T.BG_DARK}{T.BORDER}{left}"
+        bar = (f"{T.BG_DARKER}{T.BORDER}{left}"
                 f"{msg}{mid}"
                 f"{T.muted(right)}"
                 f"{T.BORDER}{T.RESET}")
