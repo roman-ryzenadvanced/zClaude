@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""zClaude TUI Engine — Lipgloss/Bubble Tea inspired terminal UI.
+"""zClaude TUI Engine — Modern terminal UI framework.
 
-Design language modeled after OpenCode (now Crush) by Charm:
+Design language: dark theme, rounded borders, sidebar layout.
   - Dark theme: #1e2327 background, #89b4fa accent, #cdd6f4 text
   - Sidebar + Main content split layout
   - Rounded border panels (╭╮╰╯) with double-line headers
@@ -24,13 +24,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 # ═══════════════════════════════════════════════════════════════
-# Theme — OpenCode/Crush dark palette (Lipgloss-inspired)
+# Theme — Dark color palette
 # ═══════════════════════════════════════════════════════════════
 
 class Theme:
-    """OpenCode-inspired dark theme. All colors as ANSI escape strings.
+    """Dark theme. All colors as ANSI escape strings.
 
-    Palette reference (from Crush/OpenCode dark theme):
+    Palette reference:
       Background:    #1e2327  (surface)
       Surface:       #282d35  (elevated surface)
       SurfaceDarker: #181825  (darker surface)
@@ -203,11 +203,11 @@ class Term:
 
 
 # ═══════════════════════════════════════════════════════════════
-# Layout — Lipgloss-style layout primitives
+# Layout — Layout primitives
 # ═══════════════════════════════════════════════════════════════
 
 class Layout:
-    """Layout primitives inspired by Lipgloss Join/Render.
+    """Layout primitives for horizontal/vertical stacking.
 
     Provides horizontal/vertical stacking, borders, padding,
     and alignment — all using string manipulation.
@@ -263,14 +263,14 @@ def _strip_ansi(s: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-# Box — Unicode bordered panels (Lipgloss style)
+# Box — Unicode bordered panels
 # ═══════════════════════════════════════════════════════════════
 
 class Box:
     """Border panel renderer with rounded corners.
 
     Styles:
-      'round'  → ╭╮╰╯ rounded corners (default, like Lipgloss RoundedBorder)
+      'round'  → ╭╮╰╯ rounded corners (default)
       'double' → ╔═╗╚═╝ double-line (for headers/focus)
       'single' → ┌┐└┘ single-line (for regular content)
       'ascii'  → +-+|+ ASCII fallback
@@ -356,7 +356,7 @@ class Box:
     @staticmethod
     def dialog(title: str, body: List[str],
                width: int = None, height: int = None) -> str:
-        """Render a centered dialog overlay (like OpenCode's modal dialogs)."""
+        """Render a centered dialog overlay."""
         w = width or min(60, Term.w() - 8)
         h = height or min(len(body) + 6, Term.h() - 8)
         ch = Box.chars("round")
@@ -639,7 +639,7 @@ class ProgressBar:
 
 
 # ═══════════════════════════════════════════════════════════════
-# Sidebar — left navigation panel (OpenCode style)
+# Sidebar — left navigation panel
 # ═══════════════════════════════════════════════════════════════
 
 class SidebarItem:
@@ -654,7 +654,7 @@ class SidebarItem:
 
 
 class Sidebar:
-    """Left sidebar navigation panel (like OpenCode's sidebar).
+    """Left sidebar navigation panel.
 
     Renders as a vertical bordered panel with icon+label items,
     highlight for active item.
@@ -718,7 +718,7 @@ class Sidebar:
 
 
 # ═══════════════════════════════════════════════════════════════
-# StatusBar — bottom status bar (OpenCode style)
+# StatusBar — bottom status bar
 # ═══════════════════════════════════════════════════════════════
 
 class StatusBar:

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""zClaude Universal Launcher — OpenCode/Crush-inspired TUI.
+"""zClaude Universal Launcher — Modern TUI.
 
 One command:  python3 zclaude_launcher.py
 
-Visual design language (modeled after OpenCode/Crush by Charm):
+Visual design language:
   - Dark theme: #1e2327 bg, #89b4fa accent, #cdd6f4 text
   - Sidebar + Main content split layout
   - Rounded border panels (╭╮╰╯) with double-line headers
@@ -42,7 +42,7 @@ if _SCRIPT_DIR not in sys.path:
 from lib.tui_engine import (
     T, Theme, Term, Box, Layout, Keyboard, Menu,
     Screen, Sidebar, SidebarItem, StatusBar,
-    Spinner, ProgressBar,
+    Spinner, ProgressBar, _strip_ansi,
 )
 from lib.tool_detector import (
     ToolInfo, TOOL_REGISTRY, detect_all_tools, get_installed_tools,
@@ -179,7 +179,7 @@ def get_presets() -> List[tuple]:
 
 
 # ═══════════════════════════════════════════════════════════════
-# Rendering helpers — OpenCode-style panels
+# Rendering helpers — Panel rendering
 # ═══════════════════════════════════════════════════════════════
 
 def render_header_line(title: str = "", subtitle: str = "") -> str:
@@ -1010,14 +1010,14 @@ def main() -> entry_point():
     """Entry point — detect capabilities, show banner, run loop."""
     Theme.detect()
 
-    # Print welcome banner (OpenCode style: rounded border box)
+    # Print welcome banner (rounded border box)
     w = Term.w()
     ch = Box.chars("round")
     inner = w - 4
     print()
     print(f"{ch['tl']}{'═' * inner}{ch['tr']}")
     title = f" {T.bold(T.mauve(' ◆ '))}{T.title(' zClaude ')}"
-    sub = T.dim(f"Universal Launcher v{VERSION} — OpenCode-style TUI")
+    sub = T.dim(f"Universal Launcher v{VERSION} — Modern TUI")
     print(f"{ch['l']} {Layout.center(title, inner)}{ch['r']}")
     print(f"{ch['hl']}{'═' * inner}{ch['vr']}")
     print(f"{ch['l']} {Layout.center(sub, inner)}{ch['r']}")
