@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Codex Launcher
+Comment=Launch Codex Desktop with any AI provider
+Exec=/home/YOUR_USERNAME/.local/bin/codex-launcher-gui
+Icon=/opt/codex-desktop/resources/app.asar.unpacked/images/icon.png
+Terminal=false
+StartupNotify=true
+Categories=Development;IDE;
+Keywords=ai;coding;launcher;

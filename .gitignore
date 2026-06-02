@@ -1,0 +1,50 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs & runtime data
+*.log
+*.pid
+.cache/
+requests/
+
+# Credentials (never commit)
+*credentials.json
+*oauth-token.json
+*token.json
+proxies.json
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.tmp
+
+# Backup files
+*.bak
+*.backup

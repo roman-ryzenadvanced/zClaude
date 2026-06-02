@@ -1,0 +1,18 @@
+// Minimal google/api/http.proto for code generation.
+
+syntax = "proto3";
+
+package google.api;
+
+option go_package = "google.golang.org/genproto/googleapis/api/annotations";
+
+message HttpRule {
+  string get = 1;
+  string put = 2;
+  string post = 3;
+  string delete = 4;
+  string patch = 5;
+  repeated HttpRule additional_bindings = 11;
+  string body = 7;
+  string response_body = 12;
+}
