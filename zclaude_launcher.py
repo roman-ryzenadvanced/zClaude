@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
-"""zClaude Universal Launcher — Unified TUI Control Center.
+"""zClaude Universal Launcher — OpenCode/Crush-inspired TUI.
 
-One command to rule them all:
-  python3 zclaude_launcher.py
+One command:  python3 zclaude_launcher.py
+
+Visual design language (modeled after OpenCode/Crush by Charm):
+  - Dark theme: #1e2327 bg, #89b4fa accent, #cdd6f4 text
+  - Sidebar + Main content split layout
+  - Rounded border panels (╭╮╰╯) with double-line headers
+  - Dialog overlays for selections (provider picker, tool picker, model chooser)
+  - Status bar at bottom with keyboard hints
+  - Consistent spacing, typography, and color hierarchy
 
 Screens:
-  [Dashboard]    Tool status + active provider + quick actions
-  [Providers]     Browse/add/edit/activate providers (20+ presets)
-  [Tool Select]   Pick coding tool (auto-detected)
-  [Launch]        Review & execute launch with proxy auto-config
-  [Sessions]      Browse recent coding sessions
-  [Settings]      Preferences, defaults, theme
+  [Dashboard]    Split view: sidebar nav + main dashboard panel
+  [Providers]     Provider browser with dialog overlay for add/edit
+  [Tool Select]   Tool picker dialog with auto-detection status
+  [Launch]        Launch confirmation dialog with option toggles
+  [Sessions]      Session browser with resume capability
+  [Settings]      Settings panel with info/stats
 
-Navigation: Arrow keys / vim keys / number shortcuts / Esc=back / q=quit
-
-Architecture: Screen-based TUI — each screen function renders a frame,
-reads a keystroke, then returns the next screen ID (or None to exit).
-No curses dependency; uses print-based rendering with ANSI escapes.
+Navigation:
+  Tab/Shift-Tab or ←/→ : switch sidebar focus
+  ↑↓/j/k           : navigate within panel
+  Enter             : select / activate / confirm
+  Esc/q             : back / exit
+  1-4               : quick action shortcuts
 """
 
 from __future__ import annotations
@@ -27,22 +35,30 @@ import sys
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-# ── Ensure project root is on sys.path so "lib.*" imports work ────
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
-from lib.tui_engine import C, Term, Box, Keyboard, Menu, ProgressBar
+from lib.tui_engine import (
+    T, Theme, Term, Box, Layout, Keyboard, Menu,
+    Screen, Sidebar, SidebarItem, StatusBar,
+    Spinner, ProgressBar,
+)
 from lib.tool_detector import (
     ToolInfo, TOOL_REGISTRY, detect_all_tools, get_installed_tools,
-    format_tool_row, summary_line,
 )
-from lib.tool_launcher import LaunchOptions, LaunchPlan, build_launch_plan, execute_launch
+from lib.tool_launcher import (
+    LaunchOptions, LaunchPlan, build_launch_plan,
+    check_compatibility, execute_launch, ENV_MAP, TOOL_COMMANDS,
+)
 
 
-# ════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
 # Constants & Screen IDs
-# ════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+
+VERSION = "1.0.0"
+SCREEN_EXIT = None
 
 SCREEN_DASHBOARD = "dashboard"
 SCREEN_PROVIDERS = "providers"
@@ -52,115 +68,64 @@ SCREEN_TOOL_SELECT = "tool_select"
 SCREEN_LAUNCH = "launch"
 SCREEN_SESSIONS = "sessions"
 SCREEN_SETTINGS = "settings"
-SCREEN_EXIT = None  # Signals exit
-
-VERSION = "1.0.0"
-
-# Action menu items on dashboard
-ACTIONS = [
-    ("1", "🚀", "Launch Tool",   SCREEN_TOOL_SELECT),
-    ("2", "📡", "Providers",     SCREEN_PROVIDERS),
-    ("3", "📂", "Sessions",      SCREEN_SESSIONS),
-    ("4", "⚙",  "Settings",      SCREEN_SETTINGS),
-    ("q", "",    "Quit",          SCREEN_EXIT),
-]
 
 
-# ════════════════════════════════════════════════════════════════════
-# Launcher state — mutable dict shared between screens
-# ════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# State
+# ═══════════════════════════════════════════════════════════════
 
 def create_state() -> Dict[str, Any]:
-    """Create fresh launcher state dict."""
     return {
-        "tools": [],                  # List[ToolInfo] — detected tools
-        "installed_tools": [],        # List[ToolInfo] — only installed
-        "endpoints": {},              # Dict[str, dict] — loaded endpoints
-        "default_provider": "",       # str — active/default provider name
-        "selected_tool": None,        # ToolInfo or None
-        "selected_provider": None,    # str or None
+        "tools": [],
+        "installed_tools": [],
+        "endpoints": {},
+        "default_provider": "",
+        "selected_tool": None,
+        "selected_provider": None,
         "launch_options": LaunchOptions(),
-        "sessions": [],               # List[SessionMeta]
-        "cursor": 0,                  # int — menu cursor position
-        "page": 0,                    # int — current page
-        "filter_text": "",            # str — search filter
-        "message": "",                # str — status message to show
-        "message_color": "info",      # str — color for status message
-        "last_launch_pid": 0,         # int — PID of last launched process
-        "proxy_running": False,       # bool
-        "proxy_port": 0,              # int
+        "sessions": [],
+        "sidebar_idx": 0,       # which sidebar item is focused
+        "list_cursor": 0,        # cursor position in lists
+        "page": 0,
+        "message": "",
+        "message_color": "info",
+        "last_pid": 0,
+        "proxy_running": False,
+        "proxy_port": 0,
+        "dialog": None,          # active overlay dialog
+        "dialog_data": {},       # dialog-specific data
     }
 
 
-# ════════════════════════════════════════════════════════════════════
-# Rendering helpers
-# ════════════════════════════════════════════════════════════════════
+# Sidebar navigation items
+def build_sidebar_items(state: Dict) -> List[SidebarItem]:
+    """Build sidebar from current context."""
+    inst_count = len(state.get("installed_tools", []))
+    prov_count = len(state.get("endpoints", {}))
+    has_proxy = state.get("proxy_running", False)
 
-def render_header(subtitle: str = "") -> str:
-    """Render the top header bar."""
-    try:
-        from universal_runtime import detect_environment
-        env_profile = detect_environment().get("profile", "unknown")
-    except Exception:
-        env_profile = os.environ.get("ZCLAUDE_PROFILE", "desktop")
-
-    w = Term.width()
-    title = C.bold(C.magenta(" 🔮 zClaude Universal Launcher "))
-    ver = C.dim(f"v{VERSION}")
-    env_tag = C.dim(f"· {env_profile}")
-    sub = f"  {C.dim(subtitle)}" if subtitle else ""
-
-    # Pad to full width
-    inner = f"{title}{ver}{env_tag}{sub}"
-    padding = w - len(inner) - 2
-    return f"{inner}{' ' * max(padding, 0)}"
-
-
-def render_footer(hint: str = "↑↓ Navigate · Enter Select · Esc Back · q Quit") -> str:
-    """Render the bottom footer bar."""
-    w = Term.width()
-    text = C.dim(f"  {hint}")
-    padding = w - len(text) - 2
-    return f"{text}{' ' * max(padding, 0)}"
+    return [
+        SidebarItem("◉", "Dashboard", "1", active=(state.get("dialog") is None),
+                   badge=f"{inst_count}"),
+        SidebarItem("⚡", "Launch Tool", "2",
+                   badge="▸" if state.get("selected_tool") else "",
+                   active=False),
+        SidebarItem("📡", "Providers", "3",
+                   badge=str(prov_count),
+                   active=False),
+        SidebarItem("📂", "Sessions", "4",
+                   badge=str(len(state.get("sessions", []))),
+                   active=False),
+        SidebarItem("⚙", "Settings", "5", active=False),
+    ]
 
 
-def render_message(state: Dict) -> str:
-    """Render the status message area (one line)."""
-    msg = state.get("message", "")
-    if not msg:
-        return ""
-    color = state.get("message_color", "info")
-    return f"\n  {C.c(color, msg)}"
+# ═══════════════════════════════════════════════════════════════
+# Data loading helpers
+# ═══════════════════════════════════════════════════════════════
 
-
-def draw_screen(lines: List[str], footer_hint: str = "") -> None:
-    """Complete screen render: clear, print header+body+footer.
-
-    This is called by every screen handler to produce output.
-    """
-    Term.clear()
-    body = "\n".join(lines)
-    print(body)
-    if state.get("message"):
-        print(render_message(state))
-    print()
-    print(render_footer(footer_hint))
-    sys.stdout.flush()
-
-
-def box_section(title: str, content_lines: List[str],
-                width: int = None) -> str:
-    """Quick helper: wrap content in a Box.panel."""
-    w = width or (Term.width() - 4)
-    return Box.panel(title, content_lines, w)
-
-
-def load_endpoints_for_ui() -> Dict[str, Any]:
-    """Load endpoints from config, normalizing format.
-
-    Handles both flat-dict and list-based endpoints.json formats.
-    """
-    # Try provider_manager's loader first (handles both formats)
+def load_endpoints() -> Dict[str, Any]:
+    """Load endpoints, normalizing both flat-dict and list formats."""
     try:
         from provider_manager import load_endpoints as pm_load
         result = pm_load()
@@ -168,32 +133,24 @@ def load_endpoints_for_ui() -> Dict[str, Any]:
             return result
     except Exception:
         pass
-
-    # Fallback: direct file read
     cfg_path = os.path.expanduser("~/.codex/endpoints.json")
     try:
         with open(cfg_path, "r") as f:
             data = json.load(f)
-
-        # List format: {"endpoints": [...], "default": "..."}
         if isinstance(data, dict) and "endpoints" in data:
             flat = {}
             for ep in data["endpoints"]:
                 if isinstance(ep, dict):
-                    name = ep.get("name", "unnamed")
-                    flat[name] = ep
+                    flat[ep.get("name", "unnamed")] = ep
             return flat
-
-        # Already flat dict
         if isinstance(data, dict):
             return data
     except (FileNotFoundError, json.JSONDecodeError):
         pass
-
     return {}
 
 
-def save_endpoints_for_ui(endpoints: Dict) -> bool:
+def save_endpoints(endpoints: Dict) -> bool:
     """Save endpoints back to config."""
     try:
         from provider_manager import save_endpoints as pm_save
@@ -201,15 +158,10 @@ def save_endpoints_for_ui(endpoints: Dict) -> bool:
         return True
     except Exception:
         pass
-
     cfg_path = os.path.expanduser("~/.codex/endpoints.json")
     try:
         os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
-        # Save in list format (what existing code expects)
-        output = {
-            "endpoints": list(endpoints.values()),
-            "default": "",
-        }
+        output = {"endpoints": list(endpoints.values()), "default": ""}
         with open(cfg_path, "w") as f:
             json.dump(output, f, indent=2)
         return True
@@ -217,8 +169,8 @@ def save_endpoints_for_ui(endpoints: Dict) -> bool:
         return False
 
 
-def get_presets_list() -> List[tuple]:
-    """Return list of (name, preset_dict) from presets module."""
+def get_presets() -> List[tuple]:
+    """Get provider presets list."""
     try:
         from lib.presets import PROVIDER_PRESETS
         return [(k, v) for k, v in PROVIDER_PRESETS.items() if k != "Custom"]
@@ -226,316 +178,359 @@ def get_presets_list() -> List[tuple]:
         return []
 
 
-# ════════════════════════════════════════════════════════════════════
-# Input helper
-# ════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# Rendering helpers — OpenCode-style panels
+# ═══════════════════════════════════════════════════════════════
 
-def read_key() -> str:
-    """Read a single keystroke with fallback."""
-    try:
-        return Keyboard.getkey()
-    except Exception:
-        try:
-            # Fallback for environments without full keyboard support
-            line = input("").strip()
-            return line[0] if line else ""
-        except EOFError:
-            return "q"
+def render_header_line(title: str = "", subtitle: str = "") -> str:
+    """Top header bar line (double-border style)."""
+    w = Term.w()
+    if subtitle:
+        text = (
+            f"{T.bold(T.mauve(' ◆ '))}{T.title(title)} "
+            f"{T.TEXT_DIM(subtitle)}"
+        )
+    else:
+        text = (
+            f"{T.bold(T.mauve(' ◆ '))}{T.title(title)} "
+            f"{T.TEXT_DIM(f'v{VERSION}')}"
+        )
+    pad = w - _strip_ansi(text)
+    return (
+        f"{T.BG_DARK}{T.BORDER_FOCUS}{text}"
+        f"{' ' * max(0, pad)}{T.BORDER_FOCUS}{T.RESET}"
+    )
 
 
-def wait_key(hint: str = "Press any key...") -> str:
-    """Show hint and wait for a keypress."""
-    print(C.dim(f"\n  {hint}"), end="", flush=True)
-    return read_key()
+def tool_status_icon(tool: ToolInfo) -> str:
+    """Return a single-char status indicator for a tool."""
+    if tool.installed:
+        if tool.supports_native:
+            return f"{T.SUCCESS('●')}"
+        else:
+            return f"{T.PRIMARY('●')}"
+    return f"{T.DIM('○')}"
 
 
-# ════════════════════════════════════════════════════════════════════
+def format_tool_list_item(tool: ToolInfo, idx: int, cursor: int) -> str:
+    """Format one tool as a list item line."""
+    is_cursor = (idx == cursor)
+    icon = tool_status_icon(tool)
+    name = T.bold(tool.display_name) if is_cursor else tool.display_name
+    ver = tool.version if tool.installed else T.dim("--")
+    backend = tool.backend_preference.upper()
+    native = "/native" if tool.supports_native else ""
+    marker = "▸ " if is_cursor else "  "
+
+    if is_cursor:
+        return (
+            f"{marker}{T.BG_HIGHLIGHT}{icon} {name}"
+            f" {T.DIM(ver)} {T.DIM(backend + native)}{T.RESET}"
+        )
+    else:
+        return f"{marker}{icon} {T.text(name)} {T.DIM(ver)}"
+
+
+def format_provider_item(name: str, cfg: Dict, idx: int,
+                       cursor: int, is_default: bool) -> str:
+    """Format one provider as a list item."""
+    is_cursor = (idx == cursor)
+    backend = cfg.get("backend_type", "?")
+    model = cfg.get("default_model", "--")
+    has_key = bool(cfg.get("api_key", ""))
+    key_icon = T.success("🔑") if has_key else T.error("◇")
+    star = T.secondary("★") if is_default else ""
+
+    marker = "▸ " if is_cursor else "  "
+    name_fmt = T.bold(name) if is_cursor else T.text(name)
+    details = f"{T.DIM(backend)} · {T.DIM(model)}"
+
+    if is_cursor:
+        return (
+            f"{marker}{T.BG_HIGHLIGHT}{key_icon} {name_fmt}"
+            f" {details}{star}{T.RESET}"
+        )
+    else:
+        return f"{marker}{key_icon} {name_fmt} {details}{star}"
+
+
+# ═══════════════════════════════════════════════════════════════
 # SCREEN 1: Dashboard
-# ════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
 
 def screen_dashboard(state: Dict) -> Optional[str]:
-    """Main dashboard — tool status table, active provider summary, actions."""
+    """Main dashboard — split view with sidebar + main panel."""
 
-    def render() -> List[str]:
+    def render_main() -> str:
         lines: List[str] = []
-        w = Term.width()
-
-        # Header
-        lines.append(render_header())
-        lines.append("")
-
-        # ── Tool Detection Table ──────────────────────────────
         tools = state["tools"]
-        installed_count = sum(1 for t in tools if t.installed)
+        installed = state["installed_tools"]
+        prov_name = state.get("default_provider", "")
+        prov_cfg = state["endpoints"].get(prov_name, {})
 
-        lines.append(f"  {C.bold('🛠️  Coding Tools Detected')}"
-                     f"{C.dim(f' ({installed_count}/{len(tools)} installed)')}")
+        # ── Title section ──
+        lines.append("")
+        lines.append(f"  {T.bold(T.sky('⚡ Launch Pad'))}")
+        lines.append(f"  {T.DIM('Select a tool and provider, then launch')}")
         lines.append("")
 
-        if tools:
-            for idx, tool in enumerate(tools):
-                lines.append(format_tool_row(tool, idx))
-        else:
-            lines.append(f"  {C.dim('No tools found in registry.')}")
-
+        # ── Quick Stats ──
+        lines.append(f"  {Box.horizontal_rule(char='─', double=True)}")
+        stats_left = f"{T.text('Tools')}: {T.bold(str(len(installed)) + '/' + str(len(tools)))}"
+        stats_right = f"{T.text('Providers')}: {T.bold(str(len(state['endpoints'])))}"
+        pid_info = f"T.PID={state['last_pid']}" if state['last_pid'] else ""
+        proxy_info = f"Proxy:{T.BOLD(':')} {state['proxy_port']}" if state.get('proxy_running') else ""
+        lines.append(f"  {stats_left}    {stats_right}  {pid_info}{proxy_info}")
         lines.append("")
 
-        # ── Active Provider ───────────────────────────────────
-        default_name = state.get("default_provider", "")
-        endpoints = state.get("endpoints", {})
-        prov_cfg = endpoints.get(default_name, {}) if default_name else {}
-
+        # ── Active Configuration ──
+        lines.append(f"  {Box.horizontal_rule(char='─', double=True)}")
         if prov_cfg:
-            backend = prov_cfg.get("backend_type", "?")
-            model = prov_cfg.get("default_model", "?")
-            url = prov_cfg.get("base_url", "?")
-            lines.append(f"  {C.bold('⭐ Active Provider')}"
-                         f"{C.dim(f'                              {default_name}')}")
-            lines.append(f"     {C.c('accent', backend)}"
-                         f"{C.dim(f' · {model}')}"
-                         f"{C.dim(f' · {url[:50]}')}")
+            lines.append(f"  {T.text('Provider')}: {T.secondary(prov_name)}")
+            lines.append(f"  {T.text('Model')}: "
+                        f"{T.bold(prov_cfg.get('default_model', '--'))}")
+            lines.append(f"  {T.text('Backend')}: "
+                        f"{T.dim(prov_cfg.get('backend_type', '?'))}")
+            lines.append(f"  {T.text('URL')}: "
+                        f"{T.dim(prov_cfg.get('base_url', '')[:50])}")
         else:
-            lines.append(f"  {C.bold('⭐ Active Provider')}"
-                         f"{C.dim('                              None configured')}")
-
+            lines.append(f"  {T.dim('No provider configured. Go to [3] Providers.')}")
         lines.append("")
 
-        # ── Last launch status ────────────────────────────────
-        pid = state.get("last_launch_pid", 0)
-        if pid:
-            proxy_info = ""
-            if state.get("proxy_running"):
-                port = state.get("proxy_port", 0)
-                proxy_info = C.success(f"· Proxy on :{port}")
-            lines.append(f"  {C.dim(f'Last launch: PID={pid} {proxy_info}')}")
-
+        # ── Detected Tools ──
+        lines.append(f"  {Box.horizontal_rule(char='─', double=True)}")
+        lines.append(f"  {T.text('Coding Tools')}")
         lines.append("")
 
-        # ── Action Menu ───────────────────────────────────────
-        lines.append(f"  {C.dim('─' * (w - 4))}")
+        for idx, tool in enumerate(tools):
+            lines.append(format_tool_list_item(tool, idx, state["list_cursor"]))
+
         lines.append("")
-        for key, icon, label, _target in ACTIONS:
-            if label == "Quit":
-                continue
-            line = f"  [{C.bold(key)}] {icon} {label}"
-            lines.append(line)
-        lines.append(f"  [{C.bold('q')}] Quit")
+        lines.append("")
+        lines.append(f"  {Box.horizontal_rule(char='─', double=True)}")
 
-        return lines
+        # ── Quick Actions ──
+        lines.append(f"  {T.DIM('Shortcuts:')}")
+        lines.append(f"    {T.bold('[1]')} Launch    {T.bold('[3]')} Providers "
+                     f"{T.bold('[4]')} Sessions  {T.bold('[5]')} Settings")
 
-    while True:
-        lines = render()
-        Term.clear()
-        print("\n".join(lines))
-        print(render_message(state))
-        print()
-        print(render_footer("1-4 Select · q Quit"))
-        sys.stdout.flush()
+        return "\n".join(lines)
 
-        key = read_key()
+    def render_sidebar() -> str:
+        items = build_sidebar_items(state)
+        sb = Sidebar(items, width=26, title="zClaude")
+        return sb.render(active_idx=0)
 
-        # Number shortcuts
-        if key == "1":
-            return SCREEN_TOOL_SELECT
-        if key == "2":
-            return SCREEN_PROVIDERS
-        if key == "3":
-            return SCREEN_SESSIONS
-        if key == "4":
-            return SCREEN_SETTINGS
-        if key in ("q", "Q"):
-            return SCREEN_EXIT
-        if key in ("escape",):
-            return SCREEN_EXIT
+    # Build screen
+    scr = Screen()
+    side = render_sidebar()
+    main = render_main()
+    hints = "1 Launch · 3 Providers · 5 Settings · q Quit"
+    scr.render_frame(sidebar=side, main=main, hints=hints)
 
-        state["message"] = f"Unknown key: {key}. Press 1-4 or q."
-        state["message_color"] = "warn"
+    return _handle_dashboard_keys(state)
 
 
-# ════════════════════════════════════════════════════════════════════
+def _handle_dashboard_keys(state: Dict) -> Optional[str]:
+    """Process keypress on dashboard screen."""
+    key = Keyboard.getkey()
+
+    if key == "1" or key == "l" or key == "L":
+        return SCREEN_TOOL_SELECT
+    if key == "3" or key == "p" or key == "P":
+        return SCREEN_PROVIDERS
+    if key == "4" or key == "s" or key == "S":
+        return SCREEN_SESSIONS
+    if key == "5" or key == "," or (key == "q"):
+        return SCREEN_SETTINGS
+    if key in ("escape", "q"):
+        return SCREEN_EXIT
+
+    # Navigate tool list
+    tools = state["tools"]
+    n = len(tools)
+    if key in ("up", "k", "K"):
+        state["list_cursor"] = max(0, state["list_cursor"] - 1)
+    elif key in ("down", "j", "J") or key == "\t":
+        state["list_cursor"] = min(n - 1, state["list_cursor"] + 1)
+    elif key == "enter":
+        if n > 0 and tools[state["list_cursor"]].installed:
+            state["selected_tool"] = tools[state["list_cursor"]]
+            return SCREEN_LAUNCH
+        elif n > 0:
+            state["message"] = (
+                f"{tools[state['list_cursor']].display_name} is not installed. "
+                f"Pick an installed tool, or install it first."
+            )
+            state["message_color"] = "warn"
+
+    return SCREEN_DASHBOARD
+
+
+# ═══════════════════════════════════════════════════════════════
 # SCREEN 2: Provider Browser
-# ════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
 
 def screen_provider_browse(state: Dict) -> Optional[str]:
-    """Browse, activate, add, edit providers. Paginated list with cursor."""
+    """Browse providers — main list + preset quick-add."""
 
-    def render() -> List[str]:
+    def render_main() -> str:
         lines: List[str] = []
         endpoints = state["endpoints"]
-        presets = get_presets_list()
+        presets = get_presets()
+        n = len(endpoints)
+        cursor = state["list_cursor"]
 
-        lines.append(render_header("Provider Browser"))
+        lines.append("")
+        lines.append(f"  {T.bold(T.primary('📡 Providers'))}")
+        lines.append(f"  {T.DIM('Browse, add, edit, or activate AI providers')}")
         lines.append("")
 
-        # ── Configured Providers ──────────────────────────────
+        # ── Configured Providers ──
         if endpoints:
-            lines.append(f"  {C.bold('📡 Configured Providers')}"
-                         f"{C.dim(f' ({len(endpoints)} configured)')}")
+            lines.append(f"  {T.secondary(f'Configured Providers ({n})')}")
             lines.append("")
-
             items = list(endpoints.items())
-            cursor = state.get("cursor", 0)
             for idx, (name, cfg) in enumerate(items):
-                marker = "▸ " if idx == cursor else "  "
-                backend = cfg.get("backend_type", "?")
-                model = cfg.get("default_model", "--")
-                has_key = bool(cfg.get("api_key", ""))
-                key_icon = C.success("🔑") if has_key else C.error("◇")
-
                 is_default = name == state.get("default_provider", "")
-                default_tag = C.success(" ★ DEFAULT") if is_default else ""
-
-                sel = C.highlight(name) if idx == cursor else name
-                line = (f"{marker}{key_icon} {sel}"
-                        f"{C.dim(f' [{backend}] {model}')}"
-                        f"{default_tag}")
-                lines.append(line)
+                lines.append(format_provider_item(
+                    name, cfg, idx, cursor, is_default))
         else:
-            lines.append(f"  {C.dim('No providers configured yet.')}")
-            lines.append(f"  {C.dim('Add one below or activate a preset!')}")
+            lines.append(f"  {T.dim('No providers configured yet.')}")
 
         lines.append("")
 
-        # ── Quick-activate Presets ────────────────────────────
+        # ── Quick-add Presets ──
         if presets:
-            lines.append(f"  {C.bold('✨ One-click Presets')}"
-                         f"{C.dim(f' ({len(presets)} available)')}")
+            lines.append(f"  {T.secondary(f'One-click Presets ({len(presets)})')}")
             lines.append("")
-            # Show first few presets
-            for idx, (pname, pcfg) in enumerate(presets[:6]):
-                pbackend = pcfg.get("backend_type", "?")
-                pmodels = pcfg.get("models", [])
-                mcount = len(pmodels) if pmodels else 0
-                lines.append(
-                    f"    {C.dim(f'{idx + 1}.')} {C.c('secondary', pname)}"
-                    f"{C.dim(f' [{pbackend}, {mcount} models]')}"
-                )
-            if len(presets) > 6:
-                lines.append(f"    {C.dim(f'... and {len(presets) - 6} more')}")
+            show = presets[:8]
+            for idx, (pname, pcfg) in enumerate(show):
+                backend = pcfg.get("backend_type", "?")
+                mcount = len(pcfg.get("models", []))
+                lines.append(f"    {T.dim(str(idx+1))}. "
+                           f"{T.c('secondary', pname)} "
+                           f"{T.DIM(f'[{backend}, {mcount} models]')}")
+            if len(presets) > 8:
+                lines.append(f"    {T.dim(f'... and {len(presets)-8} more')}")
 
         lines.append("")
-        lines.append(f"  {C.dim('─' * (Term.width() - 4))}")
-        lines.append("")
-        lines.append("  [Enter] Activate  [a] Add Custom  [e] Edit  [d] Delete")
-        lines.append("  [1-6] Quick-add Preset  [Esc/q] Back")
+        lines.append(f"  {Box.horizontal_rule(char='─', double=True)}")
+        lines.append(f"  {T.DIM('[a] Add  [e] Edit  [d] Delete  '
+                     f'[1-8] Quick-add  [Esc] Back')}")
 
-        return lines
+        return "\n".join(lines)
 
-    # Reset cursor when entering screen
-    if state.get("cursor", 0) >= len(state.get("endpoints", {})):
-        state["cursor"] = 0
+    def render_sidebar() -> str:
+        items = build_sidebar_items(state)
+        # Highlight providers item
+        for i, item in enumerate(items):
+            item.active = (i == 2)  # Providers is index 2
+        sb = Sidebar(items, width=28, title="zClaude")
+        return sb.render(active_idx=2)
 
-    while True:
-        lines = render()
-        Term.clear()
-        print("\n".join(lines))
-        print(render_message(state))
-        sys.stdout.flush()
-
-        key = read_key()
-        endpoints = state["endpoints"]
-        n_items = len(endpoints)
-        cursor = state.get("cursor", 0)
-
-        # Navigation
-        if key in ("up", "k", "K"):
-            state["cursor"] = max(0, cursor - 1) if n_items > 0 else 0
-        elif key in ("down", "j", "J"):
-            state["cursor"] = min(n_items - 1, cursor + 1) if n_items > 0 else 0
-        elif key == "enter" and n_items > 0:
-            # Set as default (activate)
-            items = list(endpoints.items())
-            name = items[cursor][0]
-            state["default_provider"] = name
-            state["selected_provider"] = name
-            state["message"] = f"Activated: {name}"
-            state["message_color"] = "success"
-        elif key == "a" or key == "A":
-            return SCREEN_PROVIDER_ADD
-        elif key == "e" or key == "E":
-            if n_items > 0:
-                items = list(endpoints.items())
-                state["selected_provider"] = items[cursor][0]
-                return SCREEN_PROVIDER_EDIT
-            else:
-                state["message"] = "No provider to edit. Add one first."
-                state["message_color"] = "warn"
-        elif key == "d" or key == "D":
-            if n_items > 0:
-                items = list(endpoints.items())
-                name = items[cursor][0]
-                del endpoints[name]
-                save_endpoints_for_ui(endpoints)
-                state["endpoints"] = endpoints
-                state["cursor"] = min(cursor, max(0, n_items - 2))
-                state["message"] = f"Deleted: {name}"
-                state["message_color"] = "success"
-        elif key in ("escape", "q", "Q"):
-            return SCREEN_DASHBOARD
-        # Numeric: quick-add preset
-        elif key.isdigit():
-            num = int(key)
-            presets = get_presets_list()
-            if 1 <= num <= len(presets):
-                pname, pcfg = presets[num - 1]
-                # Copy preset into endpoints (user still needs API key)
-                new_cfg = dict(pcfg)
-                new_cfg["api_key"] = ""  # Must be filled by user
-                endpoints[pname] = new_cfg
-                save_endpoints_for_ui(endpoints)
-                state["endpoints"] = endpoints
-                state["message"] = (
-                    f"Preset '{pname}' added! Go to Edit to set your API key."
-                )
-                state["message_color"] = "info"
-            elif 1 <= num <= 6 and len(presets) >= num:
-                # Same logic but limited display range
-                pass
+    scr = Screen()
+    scr.render_frame(sidebar=render_sidebar(), main=render_main(),
+                    hints="a Add · e Edit · d Delete · Esc Back")
+    return _handle_provider_keys(state)
 
 
-# ════════════════════════════════════════════════════════════════════
-# SCREEN 3: Provider Add (delegates to provider_manager wizard)
-# ════════════════════════════════════════════════════════════════════
+def _handle_provider_keys(state: Dict) -> Optional[str]:
+    key = Keyboard.getkey()
+    endpoints = state["endpoints"]
+    n = len(endpoints)
+    cursor = state["list_cursor"]
+
+    if key in ("up", "k", "K"):
+        state["list_cursor"] = max(0, cursor - 1) if n > 0 else 0
+    elif key in ("down", "j", "J") or key == "\t":
+        state["list_cursor"] = min(n - 1, cursor + 1) if n > 0 else 0
+    elif key == "enter" and n > 0:
+        name = list(endpoints.keys())[cursor]
+        state["default_provider"] = name
+        state["selected_provider"] = name
+        state["message"] = f"Activated: {T.secondary(name)}"
+        state["message_color"] = "success"
+    elif key in ("a", "A"):
+        return SCREEN_PROVIDER_ADD
+    elif key in ("e", "E") and n > 0:
+        name = list(endpoints.keys())[cursor]
+        state["selected_provider"] = name
+        return SCREEN_PROVIDER_EDIT
+    elif key in ("d", "D") and n > 0:
+        name = list(endpoints.keys())[cursor]
+        del endpoints[name]
+        save_endpoints(endpoints)
+        state["endpoints"] = endpoints
+        state["list_cursor"] = min(cursor, max(0, n - 2))
+        state["message"] = f"Deleted: {name}"
+        state["message_color"] = "error"
+    elif key.isdigit():
+        num = int(key)
+        presets = get_presets()
+        if 1 <= num <= len(presets):
+            pname, pcfg = presets[num - 1]
+            new_cfg = dict(pcfg)
+            new_cfg["api_key"] = ""  # User must set API key
+            endpoints[pname] = new_cfg
+            save_endpoints(endpoints)
+            state["endpoints"] = endpoints
+            state["message"] = f"Preset '{pname}' added! Set API key via Edit."
+            state["message_color"] = "info"
+    elif key in ("escape", "q"):
+        return SCREEN_DASHBOARD
+
+    return SCREEN_PROVIDERS
+
+
+# ═══════════════════════════════════════════════════════════════
+# SCREEN 3: Provider Add (wizard delegate)
+# ═══════════════════════════════════════════════════════════════
 
 def screen_provider_add(state: Dict) -> Optional[str]:
-    """Add a new custom provider using guided wizard."""
-
-    print(render_header("Add Provider"))
+    """Add provider — delegates to provider_manager wizard."""
+    print(render_header_line("Add Provider"))
     print()
-    print(C.bold("  Adding a new AI provider..."))
-    print()
-    print(C.dim("  This will open the provider setup wizard."))
+    print(f"  {T.bold('Opening setup wizard...')}")
     print()
 
     try:
         from provider_manager import cmd_wizard, banner
         banner()
-        # Run the wizard — it handles its own I/O
         new_ep = cmd_wizard()
         if new_ep:
             name = new_ep.get("name", "new-provider")
             state["endpoints"][name] = new_ep
-            save_endpoints_for_ui(state["endpoints"])
-            state["message"] = f"Provider '{name}' added successfully!"
+            save_endpoints(state["endpoints"])
+            state["message"] = f"Provider '{name}' added!"
             state["message_color"] = "success"
         else:
-            state["message"] = "Provider addition cancelled."
+            state["message"] = "Add cancelled."
             state["message_color"] = "muted"
     except Exception as exc:
         state["message"] = f"Wizard error: {exc}"
         state["message_color"] = "error"
 
-    wait_key("Press any key to continue...")
+    _wait_any("Press any key to continue...")
     return SCREEN_PROVIDERS
 
 
-# ════════════════════════════════════════════════════════════════════
-# SCREEN 4: Provider Edit (delegates to provider_manager)
-# ════════════════════════════════════════════════════════════════════
+def _wait_any(hint: str = "Press any key to continue..."):
+    """Show hint and wait for any keypress."""
+    print(f"\n  {T.dim(hint)}", end="", flush=True)
+    try:
+        Keyboard.getkey()
+    except (KeyboardInterrupt, EOFError, KeyboardInterrupt):
+        pass
+    print()
+
+
+# ═══════════════════════════════════════════════════════════════
+# SCREEN 4: Provider Edit
+# ═══════════════════════════════════════════════════════════════
 
 def screen_provider_edit(state: Dict) -> Optional[str]:
-    """Edit an existing provider's configuration."""
-
+    """Edit existing provider."""
     name = state.get("selected_provider", "")
     if not name:
         state["message"] = "No provider selected."
@@ -548,17 +543,17 @@ def screen_provider_edit(state: Dict) -> Optional[str]:
         state["message_color"] = "error"
         return SCREEN_PROVIDERS
 
-    print(render_header(f"Edit Provider: {name}"))
+    print(render_header_line(f"Edit Provider: {name}"))
     print()
-
-    # Show current config
-    print(f"  {C.bold('Name:')} {name}")
-    print(f"  {C.bold('Backend:')} {cfg.get('backend_type', '?')}")
-    print(f"  {C.bold('URL:')} {cfg.get('base_url', '?')}")
-    print(f"  {C.bold('Model:')} {cfg.get('default_model', '?')}")
-    print(f"  {C.bold('API Key:')} {'***' + (cfg.get('api_key', '')[-4:] if len(cfg.get('api_key', '')) > 4 else '(not set)')}")
+    print(f"  {T.text('Name:')}         {T.bold(name)}")
+    print(f"  {T.text('Backend:')}       {T.bold(cfg.get('backend_type', '?'))}")
+    print(f"  {T.text('Base URL:')}      {T.bold(cfg.get('base_url', '?'))}")
+    print(f"  {T.text('Model:')}         {T.bold(cfg.get('default_model', '?'))}")
+    print(f"  {T.text('API Key:')}       "
+        f"{T.bold('***' + (cfg.get('api_key', '')[-4:] if len(cfg.get('api_key', '')) > 4 else '(not set)'))}")
     models = cfg.get("models", [])
-    print(f"  {C.bold('Models:')} {', '.join(models[:8])}{f' ... (+{len(models)-8})' if len(models) > 8 else '' or '(none)'}")
+    print(f"  {T.text('Models:')}        "
+        f"{', '.join(models[:8])}{f' ... (+{len(models)-8})' if len(models) > 8 else '' or '(none)'}")
     print()
 
     try:
@@ -567,117 +562,115 @@ def screen_provider_edit(state: Dict) -> Optional[str]:
         updated = cmd_edit(name)
         if updated:
             state["endpoints"][name] = updated
-            save_endpoints_for_ui(state["endpoints"])
+            save_endpoints(state["endpoints"])
             state["message"] = f"Provider '{name}' updated!"
             state["message_color"] = "success"
         else:
-            state["message"] = "Edit cancelled or no changes."
+            state["message"] = "Edit cancelled."
             state["message_color"] = "muted"
     except Exception as exc:
-        state["message"] = f"Edit error: {exc}"
+        state["message"] = f"Error: {exc}"
         state["message_color"] = "error"
 
-    wait_key("Press any key to continue...")
+    _wait_any()
     return SCREEN_PROVIDERS
 
 
-# ════════════════════════════════════════════════════════════════════
-# SCREEN 5: Tool Selection
-# ════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# SCREEN 5: Tool Selection (Dialog)
+# ═══════════════════════════════════════════════════════════════
 
 def screen_tool_select(state: Dict) -> Optional[str]:
-    """Select which coding tool to launch."""
+    """Tool selection dialog — shows detected tools with install status."""
 
-    installed = state["installed_tools"]
-    all_tools = state["tools"]
+    def render_dialog() -> str:
+        all_tools = state["tools"]
+        installed = state["installed_tools"]
+        cursor = state["list_cursor"]
 
-    def render() -> List[str]:
-        lines: List[str] = []
-        cursor = state.get("cursor", 0)
+        body: List[str] = []
 
-        lines.append(render_header("Select Coding Tool"))
-        lines.append("")
+        # Header
+        body.append(f"  {T.bold('Select Coding Tool')}")
+        body.append(f"  {T.dim('Auto-detected CLI coding assistants')}")
+        body.append("")
 
-        # Show installed tools first, then uninstalled
-        lines.append(f"  {C.bold('✓ Installed Tools')}")
+        # Grouped: Installed first, then available
+        body.append(f"  {T.secondary(f'Installed ({len(installed)})')}")
         for idx, tool in enumerate(installed):
             marker = "▸ " if idx == cursor else "  "
-            native_tag = "/ native" if tool.supports_native else ""
-            sel = C.highlight(f"{tool.icon} {tool.display_name}") if idx == cursor else f"{tool.icon} {tool.display_name}"
-            lines.append(f"{marker}{sel}"
-                         f"{C.dim(f' v{tool.version}{native_tag}')}")
+            sel = T.BG_HIGHLIGHT if idx == cursor else ""
+            native = "/native" if tool.supports_native else ""
+            body.append(f"{marker}{sel}{T.SUCCESS('●')} "
+                       f"{T.bold(tool.display_name)}"
+                       f"{T.DIM(f'v{tool.version}{native}')}{T.RESET}")
 
-        if not installed:
-            lines.append(f"  {C.dim('  No tools detected on PATH.')}")
-
-        lines.append("")
-        offset = len(installed)
-
-        # Show uninstalled (dimmed)
         unavailable = [t for t in all_tools if not t.installed]
         if unavailable:
-            lines.append(f"  {C.dim('○ Not Installed')}")
+            body.append(f"  {T.dim(f'Available ({len(unavailable)})')}")
             for idx, tool in enumerate(unavailable):
-                abs_idx = offset + idx
-                marker = "▸ " if abs_idx == cursor else "  "
-                lines.append(f"{marker}{C.dim(f'{tool.icon} {tool.display_name}')}"
-                             f"{C.dim('  (not found)')}")
+                offset = len(installed) + idx
+                marker = "▸ " if offset == cursor else "  "
+                body.append(f"{marker}{T.DIM('○')} {T.text(tool.display_name)}"
+                       f"{T.dim('  (not found)')}")
 
-        lines.append("")
-        lines.append(f"  {C.dim('─' * (Term.width() - 4))}")
-        lines.append("")
-        lines.append("  [Enter] Select & Continue  [r] Re-scan  [Esc/q] Back")
+        return Box.dialog("Select Tool", body, width=56, height=min(16, len(body)+4))
 
-        return lines
-
-    if not installed:
-        state["cursor"] = 0
-
-    while True:
-        lines = render()
-        Term.clear()
-        print("\n".join(lines))
-        print(render_message(state))
-        sys.stdout.flush()
-
-        key = read_key()
-        total = len(all_tools)
-        cursor = state.get("cursor", 0)
-
-        if key in ("up", "k", "K"):
-            state["cursor"] = max(0, cursor - 1)
-        elif key in ("down", "j", "J"):
-            state["cursor"] = min(total - 1, cursor + 1)
-        elif key == "enter":
-            if total > 0:
-                selected = all_tools[cursor]
-                if selected.installed:
-                    state["selected_tool"] = selected
-                    state["message"] = f"Selected: {selected.display_name}"
-                    state["message_color"] = "success"
-                    return SCREEN_LAUNCH
-                else:
-                    state["message"] = (
-                        f"{selected.display_name} is not installed. "
-                        f"Install it first or pick another tool."
-                    )
-                    state["message_color"] = "warn"
-        elif key in ("r", "R"):
-            # Re-scan tools
-            state["tools"] = detect_all_tools()
-            state["installed_tools"] = get_installed_tools()
-            state["message"] = f"Re-scanned: {summary_line(state['tools'])}"
-            state["message_color"] = "info"
-        elif key in ("escape", "q", "Q"):
-            return SCREEN_DASHBOARD
+    scr = Screen()
+    scr.render_frame(main=render_dialog(),
+                    hints="↑↓ Navigate · Enter Select · r Rescan · Esc Back")
+    return _handle_tool_select_keys(state)
 
 
-# ════════════════════════════════════════════════════════════════════
-# SCREEN 6: Launch Confirm
-# ════════════════════════════════════════════════════════════════════
+def _handle_tool_select_keys(state: Dict) -> Optional[str]:
+    key = Keyboard.getkey()
+    all_tools = state["tools"]
+    total = len(all_tools)
+    cursor = state["list_cursor"]
+
+    if key in ("enter", " "):
+        if total > 0 and all_tools[cursor].installed:
+            state["selected_tool"] = all_tools[cursor]
+            state["message"] = f"Selected: {all_tools[cursor].display_name}"
+            state["message_color"] = "success"
+            return SCREEN_LAUNCH
+        elif total > 0:
+            state["message"] = (
+                f"{all_tools[cursor].display_name} is not installed. "
+                f"Install it or pick another tool."
+            )
+            state["message_color"] = "warn"
+    elif key in ("r", "R"):
+        state["tools"] = detect_all_tools()
+        state["installed_tools"] = get_installed_tools()
+        state["message"] = (
+            f"Re-scanned. "
+            f"{summary_line(state['tools'])}"
+        )
+        state["message_color"] = "info"
+    elif key in ("escape", "q"):
+        return SCREEN_DASHBOARD
+    elif key in ("up", "k", "K"):
+        state["list_cursor"] = max(0, cursor - 1)
+    elif key in ("down", "j", "J") or key == "\t":
+        state["list_cursor"] = min(total - 1, cursor + 1)
+
+    return SCREEN_TOOL_SELECT
+
+
+def summary_line(tools: List[ToolInfo]) -> str:
+    """One-line summary of detection results."""
+    installed = sum(1 for t in tools if t.installed)
+    names = ", ".join(t.display_name for t in tools if t.installed)
+    return f"{installed}/{len(tools)} detected: {names or 'none'}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# SCREEN 6: Launch Confirmation (Dialog)
+# ═══════════════════════════════════════════════════════════════
 
 def screen_launch_confirm(state: Dict) -> Optional[str]:
-    """Review launch plan, toggle options, confirm & execute."""
+    """Launch confirmation dialog with option toggles."""
 
     tool = state.get("selected_tool")
     if not tool:
@@ -685,287 +678,284 @@ def screen_launch_confirm(state: Dict) -> Optional[str]:
         state["message_color"] = "error"
         return SCREEN_TOOL_SELECT
 
-    provider_name = state.get("selected_provider") or state.get("default_provider", "")
-    endpoints = state.get("endpoints", {})
-    prov_cfg = endpoints.get(provider_name, {})
-
+    prov_name = state.get("selected_provider") or state.get("default_provider", "")
+    prov_cfg = state["endpoints"].get(prov_name, {})
     if not prov_cfg:
-        state["message"] = "No provider available. Configure one first."
+        state["message"] = "No provider. Configure one first."
         state["message_color"] = "error"
         return SCREEN_PROVIDERS
 
     options = state.get("launch_options", LaunchOptions())
 
-    def render() -> List[str]:
-        lines: List[str] = []
+    def render_dialog() -> str:
+        body: List[str] = []
 
-        lines.append(render_header("Launch Confirmation"))
-        lines.append("")
+        # Summary section
+        body.append(f"  {T.bold('🚀 Launch Configuration')}")
+        body.append("")
 
-        # ── Summary ─────────────────────────────────────────
-        lines.append(f"  {C.bold('🚀 Launch Configuration')}")
-        lines.append("")
-        lines.append(f"    Tool:      {C.highlight(f'{tool.icon} {tool.display_name}')}"
-                     f"{C.dim(f' (v{tool.version})')}")
-        prov_backend = prov_cfg.get("backend_type", "?")
-        prov_info = C.c('secondary', provider_name) + C.dim(" [" + prov_backend + "]")
-        lines.append(f"    Provider:  {prov_info}")
-        lines.append(f"    Model:     {C.bold(prov_cfg.get('default_model', 'default'))}")
-
-        # Compatibility check
-        from lib.tool_launcher import check_compatibility
+        # Tool + Provider
         compat = check_compatibility(tool, prov_cfg)
         mode = compat.get("mode", "?")
-        mode_color = "success" if mode == "native" else "info"
-        compat_reason = compat.get("reason", "")
-        mode_text = C.c(mode_color, mode.upper()) + C.dim(" — " + compat_reason)
-        lines.append(f"    Mode:      {mode_text}")
+        mode_color = "success" if mode == "native" else "primary"
+
+        body.append(f"  {T.text('Tool:')}      "
+                   f"{T.highlight(tool.icon + ' ' + tool.display_name)}"
+                   f"{T.DIM(' v' + tool.version)}")
+        bt = prov_cfg.get("backend_type", "?")
+        provider_detail = T.DIM(" [" + bt + "]")
+        body.append(f"  {T.text('Provider:')}  "
+                   f"{T.secondary(prov_name)}{provider_detail}")
+        body.append(f"  {T.text('Model:')}     "
+                   f"{T.bold(prov_cfg.get('default_model', 'default'))}")
+        reason = compat.get("reason", "")
+        mode_detail = T.DIM(" — " + reason)
+        body.append(f"  {T.text('Mode:')}      "
+                   f"{T.c(mode_color, mode.upper())}{mode_detail}")
         for w in compat.get("warnings", []):
-            warn_text = C.warn("⚠ " + w)
-            lines.append(f"              {warn_text}")
+            body.append(f"  {T.warn(f'  ⚠ {w}')}")
 
-        lines.append("")
+        body.append("")
+        body.append(f"  {Box.horizontal_rule(double=True)}")
+        body.append(f"  {T.text('Options (toggle with key)')}")
 
-        # ── Options toggles ─────────────────────────────────
-        lines.append(f"  {C.bold('⚙ Options')}")
-        lines.append(f"    [c] Caveman Mode:     {'ON ' if options.caveman_mode else 'OFF'}")
-        lines.append(f"    [r] RTK Compression:  {'ON ' if options.rtk_compression else 'OFF'}")
-        lines.append(f"    [e] Reasoning Effort: {options.reasoning_effort}")
-        lines.append(f"    [s] Sandbox Mode:     {'ON ' if options.sandbox_mode else 'OFF'}")
-        lines.append(f"    [a] Approval Mode:    {options.approval_mode}")
+        # Option toggles
+        toggles = [
+            ("c", "Caveman Mode", options.caveman_mode),
+            ("r", "RTK Compression", options.rtk_compression),
+            ("e", f"Reasoning: {options.reasoning_effort}", None),
+            ("s", "Sandbox Mode", options.sandbox_mode),
+            ("a", f"Approval: {options.approval_mode}", None),
+        ]
+        for key, label, val in toggles:
+            on_off = T.success("ON ") if val else T.dim("OFF ")
+            body.append(f"    [{T.bold(key)}] {label:<24s} {on_off}")
 
-        lines.append("")
-        lines.append(f"  {C.dim('─' * (Term.width() - 4))}")
-        lines.append("")
-        lines.append(f"  [Enter] {C.success('LAUNCH')}  [c/r/e/s/a] Toggle  [p] Change Provider  [Esc] Back")
+        body.append("")
+        body.append(f"  {Box.horizontal_rule(double=True)}")
+        hint_text = "[Enter] Launch  [p] Change Provider  [Esc] Back  [e] Toggle Options"
+        body.append(f"  {T.DIM(hint_text)}")
 
-        return lines
+        return Box.dialog("Confirm Launch", body, width=58,
+                          height=len(body)+4)
 
-    while True:
-        lines = render()
-        Term.clear()
-        print("\n".join(lines))
-        print(render_message(state))
-        sys.stdout.flush()
+    scr = Screen()
+    scr.render_frame(main=render_dialog(),
+                hints="Enter Launch · p Provider · e Toggle · Esc Back")
+    return _handle_launch_keys(state)
 
-        key = read_key()
 
-        if key == "enter":
-            # Execute launch!
-            try:
-                plan = build_launch_plan(tool, provider_name, prov_cfg, options)
-                pid = execute_launch(plan, logfn=lambda msg: print(f"  {msg}"))
-                if pid:
-                    state["last_launch_pid"] = pid
-                    state["proxy_running"] = plan.use_proxy
-                    state["proxy_port"] = plan.proxy_port or 0
-                    state["message"] = f"Launched {tool.display_name} (PID={pid})"
-                    state["message_color"] = "success"
-                else:
-                    state["message"] = "Launch failed. Check configuration."
-                    state["message_color"] = "error"
-            except Exception as exc:
-                state["message"] = f"Launch error: {exc}"
+def _handle_launch_keys(state: Dict) -> Optional[str]:
+    key = Keyboard.getkey()
+
+    if key == "enter":
+        try:
+            tool = state["selected_tool"]
+            prov_name = state.get("selected_provider") or state.get("default_provider", "")
+            prov_cfg = state["endpoints"].get(prov_name, {})
+            options = state.get("launch_options", LaunchOptions())
+            plan = build_launch_plan(tool, prov_name, prov_cfg, options)
+            pid = execute_launch(plan, logfn=lambda msg: print(f"  {msg}"))
+            if pid:
+                state["last_pid"] = pid
+                state["proxy_running"] = plan.use_proxy
+                state["proxy_port"] = plan.proxy_port or 0
+                state["message"] = f"Launched {tool.display_name} (PID={pid})"
+                state["message_color"] = "success"
+            else:
+                state["message"] = "Launch failed. Check configuration."
                 state["message_color"] = "error"
+        except Exception as exc:
+            state["message"] = f"Launch error: {exc}"
+            state["message_color"] = "error"
 
-            wait_key("Press any key to return to dashboard...")
-            return SCREEN_DASHBOARD
+        _wait_any("Press any key...")
+        return SCREEN_DASHBOARD
 
-        elif key == "c" or key == "C":
-            options.caveman_mode = not options.caveman_mode
-        elif key == "r" or key == "R":
-            options.rtk_compression = not options.rtk_compression
-        elif key == "e" or key == "E":
-            # Cycle reasoning effort
-            efforts = ["low", "medium", "high"]
-            idx = (efforts.index(options.reasoning_effort) + 1) % len(efforts)
-            options.reasoning_effort = efforts[idx]
-        elif key == "s" or key == "S":
-            options.sandbox_mode = not options.sandbox_mode
-        elif key == "a" or key == "A":
-            modes = ["default", "auto-accept", "edit-only"]
-            idx = (modes.index(options.approval_mode) + 1) % len(modes)
-            options.approval_mode = modes[idx]
-        elif key == "p" or key == "P":
-            # Change provider — go back to provider browse
-            return SCREEN_PROVIDERS
-        elif key in ("escape", "q", "Q"):
-            return SCREEN_TOOL_SELECT
+    elif key in ("c", "C"):
+        state["launch_options"].caveman_mode = not state["launch_options"].caveman_mode
+    elif key in ("r", "R"):
+        state["launch_options"].rtk_compression = not state["launch_options"].rtk_compression
+    elif key in ("e", "E"):
+        efforts = ["low", "medium", "high"]
+        idx = (efforts.index(state["launch_options"].reasoning_effort) + 1) % len(efforts)
+        state["launch_options"].reasoning_effort = efforts[idx]
+    elif key in ("s", "S"):
+        state["launch_options"].sandbox_mode = not state["launch_options"].sandbox_mode
+    elif key in ("a", "A"):
+        modes = ["default", "auto-accept", "edit-only"]
+        idx = (modes.index(state["launch_options"].approval_mode) + 1) % len(modes)
+        state["launch_options"].approval_mode = modes[idx]
+    elif key == "p":
+        return SCREEN_PROVIDERS
+    elif key in ("escape", "q"):
+        return SCREEN_TOOL_SELECT
+
+    return SCREEN_LAUNCH
 
 
-# ════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
 # SCREEN 7: Sessions
-# ════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
 
 def screen_sessions(state: Dict) -> Optional[str]:
-    """Browse recent coding sessions across all tools."""
+    """Session browser."""
 
     def load_sessions() -> list:
         try:
             from session_manager import scan_all
             sessions = scan_all()
-            # Sort by last_active descending
             sessions.sort(key=lambda s: s.last_active, reverse=True)
             return sessions
         except Exception:
             return []
 
-    def render() -> List[str]:
-        lines: List[str] = []
+    def render_main() -> str:
         sessions = state.get("sessions", [])
-        cursor = state.get("cursor", 0)
+        cursor = state["list_cursor"]
 
-        lines.append(render_header("Recent Sessions"))
+        lines: List[str] = []
+        lines.append("")
+        lines.append(f"  {T.bold(T.primary('📂 Recent Sessions'))}")
+        lines.append(f"  {T.dim('Browse and resume past coding sessions')}")
         lines.append("")
 
         if sessions:
-            lines.append(f"  {C.bold(f'📂 {len(sessions)} sessions found')}")
+            lines.append(f"  {T.secondary(f'{len(sessions)} sessions found')}")
             lines.append("")
-
-            page_size = Term.height() - 10
+            page_size = Term.h() - 10
             start = cursor
             end = min(start + page_size, len(sessions))
 
             for idx in range(start, end):
                 s = sessions[idx]
                 marker = "▸ " if idx == cursor else "  "
-
-                # Format timestamp
-                import datetime
-                dt = datetime.datetime.fromtimestamp(s.last_active)
-                time_str = dt.strftime("%Y-%m-%d %H:%M")
-
                 provider_icon = {"codex": "C", "claude": "c", "gemini": "G"}.get(s.provider, "?")
-                line = (
-                    f"{marker}{C.c('secondary', provider_icon)}"
-                    f" {s.title[:50]}"
-                    f"{C.dim(f' · {s.model}')}"
-                    f"{C.dim(f' · {time_str}')}"
-                )
-                lines.append(line)
-
-            if len(sessions) > page_size:
-                lines.append(f""
-                            f"  {C.dim(f'Showing {start+1}-{end} of {len(sessions)}')}")
+                import datetime as dt
+                time_str = dt.datetime.fromtimestamp(s.last_active).strftime("%Y-%m-%d %H:%M")
+                sel = T.BG_HIGHLIGHT if idx == cursor else ""
+                lines.append(f"{marker}{sel}{T.c('secondary', provider_icon)}"
+                             f" {T.text(s.title[:45])}"
+                             f"{T.DIM(f' · {s.model}')}"
+                             f"{T.DIM(time_str)}")
         else:
-            lines.append(f"  {C.dim('  No sessions found.')}")
-            lines.append(f"  {C.dim('  Sessions appear after you use coding tools.')}")
+            lines.append(f"  {T.dim('No sessions found.')}")
+            lines.append("")
+            lines.append(f"  {T.DIM('Sessions appear after using coding tools.')}")
 
         lines.append("")
-        lines.append(f"  {C.dim('─' * (Term.width() - 4))}")
-        lines.append("")
-        lines.append("  [r] Refresh  [↑↓] Navigate  [Enter] Resume  [Esc/q] Back")
+        lines.append(f"  {Box.horizontal_rule(double=True)}")
+        hint_text = "[r] Refresh  [↑↓] Navigate  [Enter] Resume  [Esc] Back"
+        lines.append(f"  {T.DIM(hint_text)}")
 
-        return lines
+        return "\n".join(lines)
 
-    # Load sessions on first enter
-    if not state.get("sessions"):
+    scr = Screen()
+    scr.render_frame(main=render_main(), hints="r Refresh · ↑↓ Nav · Esc Back")
+    return _handle_session_keys(state)
+
+
+def _handle_session_keys(state: Dict) -> Optional[str]:
+    key = Keyboard.getkey()
+    sessions = state.get("sessions", [])
+    n = len(sessions)
+    cursor = state["list_cursor"]
+
+    if key in ("up", "k", "K"):
+        state["list_cursor"] = max(0, cursor - 1)
+    elif key in ("down", "j", "J"):
+        state["list_cursor"] = min(max(0, n - 1), cursor + 1)
+    elif key == "enter" and n > 0:
+        s = sessions[cursor]
+        state["message"] = f"To resume: {getattr(s, 'resume_cmd', s.session_id)}"
+        state["message_color"] = "info"
+    elif key in ("r", "R"):
         state["sessions"] = load_sessions()
+        state["message"] = "Sessions refreshed."
+        state["message_color"] = "success"
+    elif key in ("escape", "q"):
+        return SCREEN_DASHBOARD
 
-    while True:
-        lines = render()
-        Term.clear()
-        print("\n".join(lines))
-        print(render_message(state))
-        sys.stdout.flush()
-
-        key = read_key()
-        sessions = state.get("sessions", [])
-        n = len(sessions)
-        cursor = state.get("cursor", 0)
-
-        if key in ("up", "k", "K"):
-            state["cursor"] = max(0, cursor - 1)
-        elif key in ("down", "j", "J"):
-            state["cursor"] = min(max(0, n - 1), cursor + 1)
-        elif key == "enter" and n > 0:
-            s = sessions[cursor]
-            resume_cmd = getattr(s, 'resume_cmd', '')
-            state["message"] = f"To resume: {resume_cmd or s.session_id}"
-            state["message_color"] = "info"
-        elif key in ("r", "R"):
-            state["sessions"] = load_sessions()
-            state["message"] = "Sessions refreshed."
-            state["message_color"] = "success"
-        elif key in ("escape", "q", "Q"):
-            return SCREEN_DASHBOARD
+    return SCREEN_SESSIONS
 
 
-# ════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
 # SCREEN 8: Settings
-# ════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
 
 def screen_settings(state: Dict) -> Optional[str]:
-    """Launcher preferences and settings."""
+    """Settings panel."""
 
-    def render() -> List[str]:
+    def render_main() -> str:
         lines: List[str] = []
-
-        lines.append(render_header("Settings"))
+        lines.append("")
+        lines.append(f"  {T.bold(T.mauve('⚙ Settings'))}")
         lines.append("")
 
-        # ── Info ───────────────────────────────────────────
-        lines.append(f"  {C.bold('ℹ zClaude Info')}")
-        lines.append(f"    Version:     {VERSION}")
+        # Info section
+        lines.append(f"  {Box.horizontal_rule(double=True)}")
+        lines.append(f"  {T.text('Application')}")
+        lines.append(f"    Version:      {T.bold(VERSION)}")
         lines.append(f"    Python:      {sys.version.split()[0]}")
         lines.append(f"    Platform:    {sys.platform}")
-        lines.append(f"    Config dir:  {os.path.expanduser('~/.codex/')}")
+        lines.append(f"    Config:      {os.path.expanduser('~/.codex/')}")
         lines.append("")
 
-        # ── Defaults ────────────────────────────────────────
-        lines.append(f"  {C.bold('Defaults')}")
-        default_prov = state.get("default_provider", "(none)")
-        lines.append(f"    Default provider: {C.c('secondary', default_prov)}")
+        # Defaults
+        lines.append(f"  {T.text('Defaults')}")
         opts = state.get("launch_options", LaunchOptions())
-        lines.append(f"    Reasoning effort: {opts.reasoning_effort}")
-        lines.append(f"    Approval mode:    {opts.approval_mode}")
+        prov = state.get("default_provider", "(none)")
+        lines.append(f"    Provider:    {T.secondary(prov) if prov != '(none)' else T.dim('(none)')}")
+        lines.append(f"    Reasoning:    {opts.reasoning_effort}")
+        lines.append(f"    Approval:     {opts.approval_mode}")
         lines.append("")
 
-        # ── Stats ──────────────────────────────────────────
+        # Stats
+        lines.append(f"  {T.text('Stats')}")
         tools = state.get("tools", [])
-        inst = sum(1 for t in tools if t.installed)
         eps = state.get("endpoints", {})
-        lines.append(f"  {C.bold('Stats')}")
-        lines.append(f"    Tools detected:  {inst}/{len(tools)}")
-        lines.append(f"    Providers:       {len(eps)}")
-        lines.append(f"    Proxy running:   {'Yes :' + str(state.get('proxy_port', '')) if state.get('proxy_running') else 'No'}")
-        lines.append(f"    Last launch PID: {state.get('last_launch_pid', 'N/A')}")
+        lines.append(f"    Tools:       "
+                   f"{T.bold(str(sum(1 for t in tools if t.installed)))}/"
+                   f"{T.bold(str(len(tools)))}")
+        lines.append(f"    Providers:    {T.bold(str(len(eps)))}")
+        lines.append(f"    Proxy:       "
+                   f"{'Yes :' + str(state.get('proxy_port', '')) if state.get('proxy_running') else 'No'}")
+        lines.append(f"    Last PID:    {state.get('last_pid', 'N/A')}")
 
         lines.append("")
-        lines.append(f"  {C.dim('─' * (Term.width() - 4))}")
-        lines.append("")
-        lines.append("  [d] Set Default Provider  [o] Toggle Options  [Esc/q] Back")
+        lines.append(f"  {Box.horizontal_rule(double=True)}")
+        hint_text = "[d] Set Default Provider  [o] Toggle Options  [Esc] Dashboard"
+        lines.append(f"  {T.DIM(hint_text)}")
 
-        return lines
+        return "\n".join(lines)
 
-    while True:
-        lines = render()
-        Term.clear()
-        print("\n".join(lines))
-        print(render_message(state))
-        sys.stdout.flush()
-
-        key = read_key()
-
-        if key == "d" or key == "D":
-            # Set default provider — jump to provider browser
-            return SCREEN_PROVIDERS
-        elif key == "o" or key == "O":
-            # Toggle global defaults
-            opts = state.get("launch_options", LaunchOptions())
-            efforts = ["low", "medium", "high"]
-            idx = (efforts.index(opts.reasoning_effort) + 1) % len(efforts)
-            opts.reasoning_effort = efforts[idx]
-            state["launch_options"] = opts
-            state["message"] = f"Default reasoning effort: {opts.reasoning_effort}"
-            state["message_color"] = "info"
-        elif key in ("escape", "q", "Q"):
-            return SCREEN_DASHBOARD
+    scr = Screen()
+    scr.render_frame(main=render_main(), hints="d Provider · o Options · Esc Back")
+    return _handle_settings_keys(state)
 
 
-# ════════════════════════════════════════════════════════════════════
-# Screen Router — maps screen IDs to handler functions
-# ════════════════════════════════════════════════════════════════════
+def _handle_settings_keys(state: Dict) -> Optional[str]:
+    key = Keyboard.getkey()
+
+    if key in ("d", "D"):
+        return SCREEN_PROVIDERS
+    elif key in ("o", "O"):
+        opts = state.get("launch_options", LaunchOptions())
+        efforts = ["low", "medium", "high"]
+        idx = (efforts.index(opts.reasoning_effort) + 1) % len(efforts)
+        opts.reasoning_effort = efforts[idx]
+        state["launch_options"] = opts
+        state["message"] = f"Reasoning effort: {opts.reasoning_effort}"
+        state["message_color"] = "info"
+    elif key in ("escape", "q"):
+        return SCREEN_DASHBOARD
+
+    return SCREEN_SETTINGS
+
+
+# ═══════════════════════════════════════════════════════════════
+# Screen Router
+# ═══════════════════════════════════════════════════════════════
 
 SCREEN_HANDLERS: Dict[Optional[str], Callable] = {
     SCREEN_DASHBOARD:     screen_dashboard,
@@ -979,85 +969,78 @@ SCREEN_HANDLERS: Dict[Optional[str], Callable] = {
 }
 
 
-# ════════════════════════════════════════════════════════════════════
-# Main entry point & event loop
-# ════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# Main Loop
+# ═══════════════════════════════════════════════════════════════
 
-def run_launcher(initial_screen: str = SCREEN_DASHBOARD) -> None:
-    """Main screen loop. Runs until a handler returns SCREEN_EXIT (None)."""
+def run_launcher(initial: str = SCREEN_DASHBOARD) -> None:
+    """Main event loop — routes between screens until exit."""
     state = create_state()
 
-    # Initialize: detect tools, load providers
+    # Initialize
     state["tools"] = detect_all_tools()
     state["installed_tools"] = get_installed_tools()
-    state["endpoints"] = load_endpoints_for_ui()
-
-    # Detect default provider
-    eps = state["endpoints"]
-    if eps:
-        first_name = next(iter(eps.keys()))
-        state["default_provider"] = first_name
-
-    current_screen = initial_screen
+    state["endpoints"] = load_endpoints()
+    if state["endpoints"]:
+        state["default_provider"] = next(iter(state["endpoints"]))
+    current = initial
 
     try:
-        while current_screen is not None:
-            handler = SCREEN_HANDLERS.get(current_screen)
+        while current is not None:
+            handler = SCREEN_HANDLERS.get(current)
             if handler is None:
-                print(C.error(f"Unknown screen: {current_screen}"))
                 break
-            current_screen = handler(state)
+            current = handler(state)
     except KeyboardInterrupt:
-        print(f"\n\n{C.dim('  Interrupted. Goodbye! 👋')}")
+        print(f"\n\n  {T.dim('Interrupted. Goodbye! 👋')}\n")
     except Exception as exc:
-        print(f"\n{C.error(f'  Launcher error: {exc}')}")
+        print(f"\n{T.error(f' Error: {exc}')}")
         import traceback
         traceback.print_exc()
     finally:
-        # Cleanup: stop proxy if running
         try:
             from lib.proxy_lifecycle import stop_proxy
             stop_proxy()
         except Exception:
             pass
+        print(f"\n  {T.dim('Thanks for using zClaude! ✨')}\n")
 
-        print(f"\n  {C.dim('Thanks for using zClaude! ✨')}\n")
 
+def main() -> entry_point():
+    """Entry point — detect capabilities, show banner, run loop."""
+    Theme.detect()
 
-def main() -> None:
-    """Entry point."""
-    # Auto-detect terminal capabilities
-    C._detect()
-
-    # Print welcome banner
+    # Print welcome banner (OpenCode style: rounded border box)
+    w = Term.w()
+    ch = Box.chars("round")
+    inner = w - 4
     print()
-    print(C.bold(C.magenta(
-        "  ╔══════════════════════════════════════════════════╗"
-    )))
-    print(C.bold(C.magenta(
-        "  ║     🔮 zClaude Universal Launcher v" + VERSION + "        ║"
-    )))
-    print(C.bold(C.magenta(
-        "  ╚══════════════════════════════════════════════════╝"
-    )))
+    print(f"{ch['tl']}{'═' * inner}{ch['tr']}")
+    title = f" {T.bold(T.mauve(' ◆ '))}{T.title(' zClaude ')}"
+    sub = T.dim(f"Universal Launcher v{VERSION} — OpenCode-style TUI")
+    print(f"{ch['l']} {Layout.center(title, inner)}{ch['r']}")
+    print(f"{ch['hl']}{'═' * inner}{ch['vr']}")
+    print(f"{ch['l']} {Layout.center(sub, inner)}{ch['r']}")
+    print(f"{ch['vl']}{'─' * inner}{ch['br']}")
     print()
 
-    # Check for --help flag
+    # Handle --help
     if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help", "help"):
-        print(C.bold("  Usage:"))
-        print(f"    python3 {os.path.basename(__file__)}")
+        print(f"  {T.text('Usage:')}")
+        print(f"    zclaude [options]")
         print()
-        print(C.bold("  Screens:"))
-        print("    Dashboard   — Tool status, active provider, quick actions")
-        print("    Providers   — Browse, add, edit, activate AI providers")
-        print("    Tool Select — Pick which coding CLI to launch")
-        print("    Launch      — Review config & launch tool with provider")
-        print("    Sessions    — Browse recent coding sessions")
-        print("    Settings    — Preferences, defaults, info")
+        print(f"  {T.text('Screens:')}")
+        print(f"    Dashboard    Tool status + active provider + quick actions")
+        print(f"    Providers   Browse/add/edit/activate AI providers (30+ presets)")
+        print(f"    Tool Select Pick coding CLI (auto-detected)")
+        print(f"        Launch      Review config & launch with proxy auto-config")
+        print(f"    Sessions    Browse/resume past coding sessions")
+        print(f"    Settings    Preferences, defaults, info")
         print()
-        print(C.bold("  Keys:"))
-        print("    ↑↓/jk     Navigate    Enter    Select/Confirm")
-        print("    Esc/q     Back/Quit    1-4      Dashboard shortcuts")
+        print(f"  {T.text('Keys:')}")
+        print(f"    ↑↓/jk       Navigate    Enter    Select/Confirm")
+        print(f"    Esc/q       Back/Quit    Tab      Next item")
+        print(f"    1-5         Shortcuts")
         print()
         return
 
