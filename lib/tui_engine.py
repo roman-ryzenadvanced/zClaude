@@ -355,37 +355,89 @@ class Box:
 
     @staticmethod
     def dialog(title: str, body: List[str],
-               width: int = None, height: int = None) -> str:
-        """Render a centered dialog overlay."""
+               width: int = None, height: int = None,
+               scroll_offset: int = 0) -> str:
+        """Render a centered dialog overlay with scroll support.
+
+        Args:
+            title: Dialog title shown in header bar.
+            body: List of content lines to display.
+            width: Dialog width in chars (auto if None).
+            height: Max dialog height in chars (auto-fits to screen if None).
+            scroll_offset: Number of body lines to skip (for pagination).
+
+        Returns:
+            Rendered dialog string. Content is clipped to fit terminal height.
+            Scroll indicators (▲/▼) are shown when content overflows.
+        """
         w = width or min(60, Term.w() - 8)
-        h = height or min(len(body) + 6, Term.h() - 8)
+        term_h = Term.h()
+        # Budget: 2 border lines + 1-2 title lines + 1 hint line + 1 bottom border = 5-6 overhead
+        max_body_lines = term_h - 6
         ch = Box.chars("round")
         inner = w - 4
 
         out: List[str] = []
 
-        # Top
+        # Top border
         out.append(f"{ch['tl']}{'═' * inner}{ch['tr']}")
 
         # Title bar (double-line for emphasis)
         if title:
             out.append(f"{ch['l']} {T.bold(T.primary(title)):^{inner}s} {ch['r']}")
             out.append(f"{ch['l']}{'─' * inner}{ch['r']}")
+            title_lines = 2
+        else:
+            title_lines = 0
 
-        # Body
-        for line in body:
+        # Calculate visible window — clip body to fit available space
+        total_body = len(body)
+        usable_height = max_body_lines - title_lines
+
+        # Ensure scroll_offset is within bounds
+        if scroll_offset < 0:
+            scroll_offset = 0
+        elif scroll_offset > 0 and scroll_offset >= total_body:
+            scroll_offset = max(0, total_body - usable_height)
+
+        # Determine which body lines to show
+        if total_body <= usable_height:
+            # Everything fits — show all
+            visible = body
+            has_more_above = False
+            has_more_below = False
+        else:
+            # Need to paginate — show a window of lines
+            end_offset = scroll_offset + usable_height
+            if end_offset > total_body:
+                end_offset = total_body
+                scroll_offset = max(0, total_body - usable_height)
+
+            visible = body[scroll_offset:end_offset]
+            has_more_above = scroll_offset > 0
+            has_more_below = end_offset < total_body
+
+        # Scroll indicator: more items above
+        if has_more_above:
+            out.append(f"{ch['l']} {T.dim(' ▲ ' + str(scroll_offset) + ' more above'):^{inner}s} {ch['r']}")
+
+        # Visible body lines
+        for line in visible:
             out.append(f"{ch['l']} {_pad_line(line, inner)}{ch['r']}")
 
-        # Fill remaining space
-        body_lines = len(body)
-        fill_lines = max(0, h - body_lines - 4)
-        for _ in range(fill_lines):
+        # Scroll indicator: more items below
+        if has_more_below:
+            remaining = total_body - scroll_offset - len(visible)
+            out.append(f"{ch['l']} {T.dim(' ▼ ' + str(remaining) + ' more below'):^{inner}s} {ch['r']}")
+
+        # Fill remaining space so dialog has consistent size
+        shown_lines = len(visible) + (1 if has_more_above else 0) + (1 if has_more_below else 0)
+        fill_count = max(0, usable_height - shown_lines)
+        for _ in range(fill_count):
             out.append(f"{ch['l']}{' ' * inner}{ch['r']}")
 
-        # Bottom hint
+        # Bottom border
         out.append(f"{ch['vl']}{'─' * inner}{ch['br']}")
-        hint = T.dim(" Esc close · ↑↓ navigate · Enter select ")
-        out.append(f"{ch['l']} {hint:<{inner}s}{ch['r']}")
 
         return "\n".join(out)
 

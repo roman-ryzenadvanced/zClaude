@@ -72,6 +72,7 @@ def create_state() -> Dict[str, Any]:
         "selected_tool": None,
         "launch_options": LaunchOptions(),
         "list_cursor": 0,
+        "scroll_offset": 0,
         "message": "",
         "last_pid": 0,
         "proxy_running": False,
@@ -158,6 +159,53 @@ def summary_line(tools: List[ToolInfo]) -> str:
     return f"{installed}/{len(tools)} detected: {names or 'none'}"
 
 
+def auto_scroll(state: Dict, total_items: int) -> None:
+    """Adjust scroll_offset so the cursor is always visible.
+
+    Called before rendering a dialog. Keeps list_cursor within
+    the visible window of items.
+    """
+    cursor = state["list_cursor"]
+    offset = state.get("scroll_offset", 0)
+    # Available height for body content (approximate, leaves room for borders+title+hint)
+    usable = Term.h() - 8
+    if usable < 3:
+        usable = 3
+
+    # If cursor is above visible area, scroll up
+    if cursor < offset:
+        state["scroll_offset"] = cursor
+    # If cursor is below visible area, scroll down
+    elif cursor >= offset + usable:
+        state["scroll_offset"] = cursor - usable + 1
+
+    # Clamp offset to valid range
+    if state["scroll_offset"] < 0:
+        state["scroll_offset"] = 0
+    max_scroll = max(0, total_items - usable)
+    if state["scroll_offset"] > max_scroll:
+        state["scroll_offset"] = max_scroll
+
+
+def handle_scroll(state: Dict, key: str, total_items: int) -> bool:
+    """Handle Page Up / Page Down scrolling in a list.
+
+    Returns True if key was consumed as a scroll action.
+    """
+    if key not in ("page_up", "page_down"):
+        return False
+    usable = Term.h() - 8
+    if usable < 3:
+        usable = 3
+    offset = state.get("scroll_offset", 0)
+    if key == "page_up":
+        state["scroll_offset"] = max(0, offset - usable)
+    else:
+        max_off = max(0, total_items - usable)
+        state["scroll_offset"] = min(max_off, offset + usable)
+    return True
+
+
 def _wait_any(hint: str = "Press any key to continue..."):
     """Show hint and wait for any keypress."""
     print(f"\n  {T.dim(hint)}", end="", flush=True)
@@ -223,10 +271,12 @@ def step_provider(state: Dict) -> Optional[str]:
                            f"{T.dim(f'[{backend}]')}")
 
         body.append("")
-        hint_text = "[Enter] Select  [a] Add  [1-9] Quick-add  [q] Quit"
+        hint_text = "[Enter] Select  [a] Add  [1-9] Quick-add  [PgUp/PgDn] Scroll  [q] Quit"
         body.append(f"  {T.dim(hint_text)}")
 
-        return Box.dialog("Select Provider", body, width=58, height=min(20, len(body)+4))
+        auto_scroll(state, n)
+        return Box.dialog("Select Provider", body, width=58,
+                          scroll_offset=state["scroll_offset"])
 
     scr = Screen()
     scr.render_frame(main=render_dialog())
@@ -243,6 +293,8 @@ def _handle_provider_keys(state: Dict) -> Optional[str]:
         state["list_cursor"] = max(0, cursor - 1) if n > 0 else 0
     elif key in ("down", "j", "J") or key == "\t":
         state["list_cursor"] = min(n - 1, cursor + 1) if n > 0 else 0
+    elif handle_scroll(state, key, n):
+        pass  # scroll handled
     elif key == "enter" and n > 0:
         name = list(endpoints.keys())[cursor]
         state["selected_provider"] = name
@@ -360,10 +412,12 @@ def step_model(state: Dict) -> Optional[str]:
                          'to choose a different provider.')}")
 
         body.append("")
-        body.append("  " + T.dim("[Enter] Select                      [Esc] Back"))
+        body.append("  " + T.dim("[Enter] Select              [PgUp/PgDn] Scroll  [Esc] Back"))
 
         title = f"Select Model — {prov_name}"
-        return Box.dialog(title, body, width=54, height=min(18, len(body)+4))
+        auto_scroll(state, n)
+        return Box.dialog(title, body, width=54,
+                          scroll_offset=state["scroll_offset"])
 
     scr = Screen()
     scr.render_frame(main=render_dialog())
@@ -386,6 +440,8 @@ def _handle_model_keys(state: Dict, prov_cfg: Dict) -> Optional[str]:
         state["list_cursor"] = max(0, cursor - 1) if n > 0 else 0
     elif key in ("down", "j", "J") or key == "\t":
         state["list_cursor"] = min(n - 1, cursor + 1) if n > 0 else 0
+    elif handle_scroll(state, key, n):
+        pass  # scroll handled
     elif key == "enter":
         if n > 0:
             state["selected_model"] = models[cursor]
@@ -447,9 +503,11 @@ def step_tool(state: Dict) -> Optional[str]:
                            f"{T.dim('  (not found)')}")
 
         body.append("")
-        body.append("  " + T.dim("[Enter] Select                      [Esc] Back"))
+        body.append("  " + T.dim("[Enter] Select  [r] Rescan  [PgUp/PgDn] Scroll  [Esc] Back"))
 
-        return Box.dialog("Select Coding Tool", body, width=56, height=min(18, len(body)+4))
+        auto_scroll(state, total)
+        return Box.dialog("Select Coding Tool", body, width=56,
+                          scroll_offset=state["scroll_offset"])
 
     scr = Screen()
     scr.render_frame(main=render_dialog())
@@ -483,6 +541,8 @@ def _handle_tool_keys(state: Dict) -> Optional[str]:
         state["list_cursor"] = max(0, cursor - 1)
     elif key in ("down", "j", "J") or key == "\t":
         state["list_cursor"] = min(total - 1, cursor + 1)
+    elif handle_scroll(state, key, total):
+        pass  # scroll handled
 
     return SCREEN_TOOL
 
